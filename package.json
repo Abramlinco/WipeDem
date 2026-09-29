@@ -1,0 +1,21 @@
+{
+  "name": "sentinel-bot",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Anti impersonation and scam detection for Web3 communities on Telegram and Discord, with a shared cross project ban network and a web dashboard.",
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-async-errors": "^3.1.1",
+    "lowdb": "^7.0.1",
+    "nanoid": "^5.0.7",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
