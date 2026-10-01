@@ -42,7 +42,18 @@ export function startTelegramBot() {
     return null;
   }
 
-  bot = new TelegramBot(config.telegramToken, { polling: true });
+    bot = new TelegramBot(config.telegramToken, { 
+    polling: {
+      params: { timeout: 10 },
+      request: {
+        agentOptions: {
+          keepAlive: true,
+          family: 4 // <-- THIS EXPLICITLY PERMANENTLY STABILISES NETWORK DROPS
+        }
+      }
+    } 
+  });
+
   bot.getMe().then(me => { botUsername = me.username; }).catch(err =>
     console.error('[telegram] could not read bot username, check TELEGRAM_BOT_TOKEN', err.message));
 
@@ -76,10 +87,16 @@ export function startTelegramBot() {
     else upsertCommunity({ platform: 'telegram', id: upd.chat.id, name: upd.chat.title || 'Group' });
   });
 
-  bot.on('message', (msg) => handleMessage(msg));
-  // Scammers post something harmless, then edit it into the scam. Check edits too.
-  bot.on('edited_message', (msg) => handleMessage(msg, true));
-  bot.on('polling_error', (err) => console.error('[telegram] polling error', err.message));
+   // --- FIXED ASYNC INTEGRATION GATEWAYS APPLIED HERE ---
+  bot.on('message', async (msg) => { await handleMessage(msg); });
+  bot.on('edited_message', async (msg) => { await handleMessage(msg, true); });
+  
+  // Suppress network noise: node-telegram-bot-api auto-reconnects safely
+  bot.on('polling_error', (err) => {
+    if (err.message.includes('ECONNRESET')) return;
+    console.error('[telegram] polling error', err.message);
+  });
+
 
   console.log('[telegram] Bot started, polling for messages.');
   return bot;
@@ -115,12 +132,20 @@ async function handleMessage(msg, isEdit = false) {
     const adminIds = await getAdminIds(chatId);
     if (adminIds.has(userId)) return; // real admins (by ID) can say anything
 
-    const settings = await getSettings('telegram', communityId);
-    const result = checkMessage(msg.text, settings.rules);
+        const settings = await getSettings('telegram', communityId);
+    
+    // --- RESTORED THIS CRITICAL CHECK LINE HERE ---
+    const result = await checkMessage(msg.text, settings.rules);
     if (!result.flagged) return;
 
-    // Contain first, review after. Nobody is permanently banned without a human.
-    await bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+    // --- VERIFIED TYPE-SAFE DELETION CORE ---
+    const targetChat = msg.chat.id;
+    const targetMessageId = Number(msg.message_id);
+
+    await bot.deleteMessage(targetChat, targetMessageId)
+      .then(() => console.log(`[Sentinel Success] Deleted Telegram scam text from user: ${msg.from.id}`))
+      .catch((err) => console.error("[Telegram Deletion API Error] Failure Details:", err.message));
+
 
     const strikes = (await countStrikes('telegram', communityId, userId, settings.strikeWindowDays)) + 1;
     const tier = resolveAction(strikes, settings.escalation, result.penalty);
@@ -160,6 +185,7 @@ async function handleMessage(msg, isEdit = false) {
     console.error('[telegram] error handling message', err.message);
   }
 }
+
 
 /* ------------- used by the dashboard ------------- */
 

@@ -86,59 +86,54 @@ export async function checkMessage(text, platformMessage, rules) {
     };
   }
 
-  // =========================================================
+    // =========================================================
   // 2. BEHAVIORAL CHECK: Smart Link & Identity Verification
   // =========================================================
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const urlRegex = /(https?:\/\/[^\s>]+)/g;
   const links = t.match(urlRegex);
 
-  if (links) {
-    // Baseline safe zones
-    const trustedDomains = ['discord.gg', 'discord.com', 'discordapp.com', 'telegram.me', 't.me', 'quicksilver.zone'];
-    
-    // Check if user is fully paired up inside your local JSON datastore
-    const authorId = msgObj?.author?.id || msgObj?.from?.id;
+  if (links && msgObj) {
+    const authorId = msgObj.author?.id || msgObj.from?.id;
     const identityIsVerified = authorId ? checkUserVerifiedID(authorId) : false;
 
-    // Smart contextual risk flags
-    const scamTriggers = ['support', 'ticket', 'assistance', 'verify', 'claim', 'help', 'follow', 'here', 'below', 'section'];
+    const scamTriggers = ['support', 'ticket', 'assistance', 'verify', 'claim', 'help', 'follow', 'here', 'below', 'section', 'forum', 'appropriate', 'dm'];
     const triggersFound = scamTriggers.filter(word => t.includes(word));
 
     for (const url of links) {
       const lowerUrl = url.toLowerCase();
       
-      // Pass-through: Do not trigger if it's an official Discord or Telegram address
+      // Whitelist pass-through: Official community spaces are cleanly bypassed
+      const trustedDomains = ['discord.gg', 'discord.com', 'discordapp.com', 'telegram.me', 't.me', 'quicksilver.zone'];
       const isOfficialPlatform = trustedDomains.some(domain => lowerUrl.includes(domain));
-      if (isOfficialPlatform) continue;
 
-      // Type-Squat Check: Catches domains mimicking official layouts (e.g. d1scord.app)
-      if (lowerUrl.includes('disc') && !lowerUrl.includes('discord.com') && !lowerUrl.includes('discord.gg') && !lowerUrl.includes('discordapp.com')) {
+      // Typosquatting Clone Detection
+      if (lowerUrl.includes('disc') && !isOfficialPlatform) {
         return {
           flagged: true,
-          ruleKey: 'phishing_link',
+          ruleKey: 'custom_scam_links',
           ruleLabel: 'Phishing Discord Clone Link',
-          matchedPhrase: url,
-          penalty: { mode: 'delete' } // Clean up text instantly
-        };
-      }
-
-      // Identity Enforcement Check: Unverified profiles are blocked from dropping external links
-      if (!identityIsVerified) {
-        return {
-          flagged: true,
-          ruleKey: 'unauthorized_link_post',
-          ruleLabel: '🚨 Unauthorized Link (Profile Not Linked to Telegram)',
           matchedPhrase: url,
           penalty: { mode: 'delete' }
         };
       }
 
-      // Smart Intent Check: Links combined with high-urgency ticket text get swept
-      if (triggersFound.length >= 1) {
+      // 🛑 CRITICAL ENFORCEMENT: If it's an outside platform path AND the user is unverified, clear it out
+      if (!isOfficialPlatform && !identityIsVerified) {
         return {
           flagged: true,
-          ruleKey: 'deceptive_action_link',
-          ruleLabel: '🛑 Deceptive Action/Ticket Heuristic Link',
+          ruleKey: 'custom_scam_links',
+          ruleLabel: '🚨 Unauthorized External Path (Unverified Profile ID)',
+          matchedPhrase: url,
+          penalty: { mode: 'delete' }
+        };
+      }
+
+      // 🛑 DECEPTIVE SHORTCUT TRAP: Even if it's an official invite link, if combined with support scam keywords, intercept it
+      if (!identityIsVerified && triggersFound.length >= 1) {
+        return {
+          flagged: true,
+          ruleKey: 'custom_scam_links',
+          ruleLabel: '🛑 Deceptive Support/Ticket Heuristic Link',
           matchedPhrase: `${url} (Context: ${triggersFound.join(', ')})`,
           penalty: { mode: 'delete' }
         };

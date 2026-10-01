@@ -74,12 +74,16 @@ function fail(e) {
 const state = {
   cfg: { discord: false, telegram: false },
   me: null,
-  scope: 'all',          // 'all' or a community key like "telegram:-100123"
-  filter: 'open',        // open | done | all
+  invites: [], 
+  scope: 'all',
+  filter: 'open',
   reportDays: 30,
   profile: null,
+  mobileDrawerOpen: false, // <-- ADD THIS DYNAMIC TOGGLE KEY
   settings: { platform: null, id: null, data: null, extra: null }
 };
+
+
 
 const NAV = [
   ['home', 'Home', '◆'], ['discord', 'Discord', '◈'], ['telegram', 'Telegram', '✈'],
@@ -162,6 +166,22 @@ async function telegramLogin() {
   }, 2000);
 }
 
+function renderNavLink(id, label, ic, page) {
+  // If this item is currently active, tag it with your project's active CSS class
+  const isActive = page === id ? 'active' : '';
+  const isTarget = id === 'discord' || id === 'telegram';
+  const badgeHtml = isTarget ? html`<span class="badge" data-badge="${id}" hidden></span>` : '';
+  
+  // Custom injection: apply an explicit direct color block if the link is active to verify layout visibility
+  const activeColorStyle = page === id ? 'color: #5865F2; font-weight: bold;' : 'color: #666;';
+  
+  return html`<a data-nav="#/${id}" class="${isActive}" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-decoration: none; font-size: 11px; ${activeColorStyle}">
+    <span class="ic" style="font-size: 20px; margin-bottom: 2px;">${ic}</span>
+    <span>${label}</span>
+    ${badgeHtml}
+  </a>`;
+}
+
 /* =====================================================================
    Shell
 ===================================================================== */
@@ -171,20 +191,48 @@ function shell(page) {
     me.discord && html`<div class="who-chip"><span class="plat discord">DC</span>${me.discord.user.username}</div>`,
     me.telegram && html`<div class="who-chip"><span class="plat telegram">TG</span>${me.telegram.user.username ? `@${me.telegram.user.username}` : me.telegram.user.firstName}</div>`
   ];
+
+  // Filters major quick access targets vs secondary parameters
+  const majorNav = NAV.filter(([id]) => ['home', 'discord', 'telegram'].includes(id));
+  const burgerNav = NAV.filter(([id]) => ['reports', 'network', 'settings'].includes(id));
+  const isDrawerOpen = state.mobileDrawerOpen ? 'open' : '';
+
   return html`<div class="shell">
+    <!-- DESKTOP SIDEBAR RAIL -->
     <aside class="rail">
       <div class="brand"><div class="dot"></div><div><b>Sentinel</b><small>Community Protection</small></div></div>
       <nav class="nav">
-        ${NAV.map(([id, label, ic]) => html`<a data-nav="#/${id}" class="${page === id ? 'active' : ''}"><span class="ic">${ic}</span>${label}${(id === 'discord' || id === 'telegram') ? html`<span class="badge" data-badge="${id}" hidden></span>` : ''}</a>`)}
+        ${NAV.map(([id, label, ic]) => renderNavLink(id, label, ic, page))}
+        <button class="btn primary" data-act="smart-add-community" style="margin: 12px 10px; width: calc(100% - 20px); text-align: left; justify-content: flex-start; gap: 8px;">
+          <span class="ic">＋</span> Add Community
+        </button>
       </nav>
       <div class="railfoot">${who}<a href="#/settings/account" data-nav="#/settings/account">Account</a><a data-act="logout" style="cursor:pointer">Log out</a></div>
     </aside>
     <main class="main" id="page"><div class="empty">Loading…</div></main>
   </div>
-  <nav class="tabbar">
-    ${NAV.map(([id, label, ic]) => html`<a data-nav="#/${id}" class="${page === id ? 'active' : ''}"><span class="ic">${ic}</span>${label}</a>`)}
+  
+    <!-- MOBILE BURGER OVERLAY DRAWER -->
+  <div class="mobile-drawer ${isDrawerOpen}" style="position: fixed; bottom: 65px; right: 16px; left: 16px; background: #fff; box-shadow: 0 -4px 20px rgba(0,0,0,0.15); border-radius: 16px; padding: 16px; z-index: 99;">
+    <div style="font-weight: bold; margin-bottom: 12px; font-size: 12px; text-transform: uppercase; color: #888; letter-spacing: 0.5px;">More Features</div>
+    <nav class="nav" style="display: flex; flex-direction: column; gap: 6px;">
+      ${burgerNav.map(([id, label, ic]) => renderNavLink(id, label, ic, page))}
+      <button class="btn primary" data-act="smart-add-community" style="margin-top: 8px; width: 100%; text-align: left; justify-content: flex-start; gap: 8px;">
+        <span class="ic">＋</span> Add Community
+      </button>
+    </nav>
+  </div>
+
+  <!-- FIXED RESPONSIVE MOBILE TABBAR -->
+  <nav class="tabbar" style="display: flex; justify-content: space-around; align-items: center; background: #fff; border-top: 1px solid #eee; position: fixed; bottom: 0; left: 0; right: 0; height: 60px; z-index: 100; padding-bottom: env(safe-area-inset-bottom);">
+    ${majorNav.map(([id, label, ic]) => renderNavLink(id, label, ic, page))}
+    <a data-act="toggle-mobile-drawer" class="${state.mobileDrawerOpen ? 'active' : ''}" style="cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; color: #666;">
+      <span class="ic" style="font-size: 20px; line-height: 1;">☰</span>
+      Menu
+    </a>
   </nav>`;
 }
+
 
 async function loadPage(page, opts = {}) {
   try {
@@ -301,10 +349,12 @@ async function loadPlatform(platform) {
 ===================================================================== */
 async function openProfile(platform, communityId, userId) {
   try {
+    state.mobileDrawerOpen = false; // <-- ADD THIS LINE TO CLEAR MENU WHEN OPENING USER
     state.profile = await api(`/users/${platform}/${enc(communityId)}/${enc(userId)}`);
     drawProfile();
   } catch (e) { fail(e); }
 }
+
 
 function closeProfile() { state.profile = null; $('#drawer-root').innerHTML = ''; }
 
@@ -561,8 +611,44 @@ async function saveSetting(method, path, body, focusId) {
    Events (one place, so nothing is attached inline)
 ===================================================================== */
 const ACTS = {
+  // --- ADDED THIS LINE TO POP THE MOBILE MENU DRAWER OPEN ON CLICK ---
+  'toggle-mobile-drawer': () => { state.mobileDrawerOpen = !state.mobileDrawerOpen; render(); },
+
   'tg-login': telegramLogin,
   'tg-connect': async () => { await telegramLogin(); },
+  
+  'smart-add-community': async (el) => {
+    el.disabled = true;
+    try {
+      state.mobileDrawerOpen = false; // Gracefully auto-closes open drawer upon interaction
+
+      // 1. Fetch a fresh bot link target list generated dynamically from backend
+      const userData = await api('/me');
+      if (!userData.invites || !userData.invites.length) {
+        // Fallback: If your user payload doesn't contain a broad list, use your direct app id generator link
+        window.open('https://discord.com' + (state.cfg.discordClientId || '') + '&scope=bot%20applications.commands&permissions=8', '_blank', 'width=500,height=700');
+        el.disabled = false;
+        return;
+      }
+      
+      // 2. Trigger the official authorization path in a targeted separate tab/window
+      const popup = window.open(userData.invites[0].url, 'Invite Sentinel Bot', 'width=500,height=700,top=100,left=100');
+      
+      // 3. Keep tracking if window is active. Auto-reload dashboard variables as soon as they authorize!
+      const monitor = setInterval(async () => {
+        if (popup.closed) {
+          clearInterval(monitor);
+          toast("Syncing new community channels...");
+          state.me = await api('/me'); // Pull clean database mapping configurations
+          render();
+        }
+      }, 1000);
+    } catch (err) {
+      toast("Could not generate setup link", true);
+    }
+    el.disabled = false;
+  },
+  
   logout: async () => { await fetch('/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); state.me = null; closeProfile(); render(); },
   profile: (el) => openProfile(el.dataset.platform, el.dataset.community, el.dataset.user),
   do: doAction,
@@ -609,7 +695,13 @@ const CHANGES = {
 
 document.addEventListener('click', (e) => {
   const nav = e.target.closest('[data-nav]');
-  if (nav) { closeProfile(); location.hash = nav.dataset.nav; return; }
+  if (nav) { 
+    closeProfile(); 
+    state.mobileDrawerOpen = false; // <-- ADD THIS LINE TO AUTO-CLOSE DRAWER
+    location.hash = nav.dataset.nav; 
+    return; 
+  }
+
   const el = e.target.closest('[data-act]');
   if (el && ACTS[el.dataset.act]) ACTS[el.dataset.act](el, e);
 });
