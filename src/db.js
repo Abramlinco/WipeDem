@@ -35,7 +35,10 @@ const defaultData = {
   pools: { items: [], events: [] }, // Pulse: pools each community watches, and what changed in them
   xAccounts: {},   // Pulse: encrypted X keys/tokens per community. Kept apart from settings so they can never be sent to the browser.
   campaigns: [],    // Pulse: manager-created campaign plans, scoped to a community
-  postLog: []      // Pulse: who posted what, where
+  postLog: [],      // Pulse: who posted what, where
+  faqDrafts: [],    // FAQs Intelligence: community-derived FAQ drafts awaiting manager review
+  technicalReports: [], // Technical Push: generated technical incident reports
+  technicalSettings: {} // communityKey -> Technical Push preferences
 };
 
 // The file is read once at start. From then on memory is the source of truth
@@ -439,10 +442,17 @@ export function addDiscussion(item) {
 
 // Someone replied to a message we kept. Counting replies shows which ideas
 // got people talking, and a staff reply marks a question as answered.
-export function noteReply(platform, communityId, parentMessageId, byStaff) {
+export function noteReply(platform, communityId, parentMessageId, byStaff, replyText = '') {
   const parent = msgIndex.get(msgKey(platform, String(communityId), String(parentMessageId)));
   if (!parent) return false;
-  if (byStaff) parent.staffReplied = true; else parent.replies++;
+  if (byStaff) {
+    parent.staffReplied = true;
+    parent.staffReplies ||= [];
+    if (replyText && !parent.staffReplies.some((r) => r.text === String(replyText).slice(0, 1200))) {
+      parent.staffReplies.push({ text: String(replyText).slice(0, 1200), at: new Date().toISOString() });
+      parent.staffReplies = parent.staffReplies.slice(-5);
+    }
+  } else parent.replies++;
   dirty = true;
   return true;
 }
@@ -742,4 +752,48 @@ export async function updateCampaign(id, communityKeys, patch) {
 export async function deleteCampaign(id, communityKeys) {
   const n = db.data.campaigns.length; db.data.campaigns = db.data.campaigns.filter((x) => !(x.id === id && communityKeys.has(x.communityKey)));
   if (db.data.campaigns.length === n) return false; await db.write(); return true;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Pulse: FAQs Intelligence and Technical Push                         */
+/* ------------------------------------------------------------------ */
+export function listFaqDrafts(communityKeys) {
+  return db.data.faqDrafts.filter((x) => communityKeys.has(x.communityKey))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+export async function addFaqDraft(rec) {
+  const existing = db.data.faqDrafts.find((x) => x.communityKey === rec.communityKey && x.fingerprint === rec.fingerprint && x.status !== 'dismissed');
+  if (existing) return existing;
+  db.data.faqDrafts.unshift(rec);
+  db.data.faqDrafts = db.data.faqDrafts.slice(0, 1000);
+  await db.write(); return rec;
+}
+export async function updateFaqDraft(id, communityKeys, patch) {
+  const rec = db.data.faqDrafts.find((x) => x.id === id && communityKeys.has(x.communityKey));
+  if (!rec) return null;
+  Object.assign(rec, patch, { updatedAt: new Date().toISOString() });
+  await db.write(); return rec;
+}
+export function getTechnicalSettings(key) {
+  return db.data.technicalSettings[key] || { cadence: 'weekly', delivery: 'download', destinationPlatform: '', destinationCommunityId: '', destinationChannelId: '', enabled: false, lastPushedAt: null };
+}
+export async function saveTechnicalSettings(key, settings) {
+  db.data.technicalSettings[key] = { ...getTechnicalSettings(key), ...settings };
+  await db.write(); return db.data.technicalSettings[key];
+}
+export function listTechnicalReports(communityKeys) {
+  return db.data.technicalReports.filter((x) => communityKeys.has(x.communityKey))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+export async function addTechnicalReport(rec) {
+  db.data.technicalReports.unshift(rec);
+  db.data.technicalReports = db.data.technicalReports.slice(0, 500);
+  await db.write(); return rec;
+}
+export async function markTechnicalReportPushed(id, communityKeys) {
+  const rec = db.data.technicalReports.find((x) => x.id === id && communityKeys.has(x.communityKey));
+  if (!rec) return null;
+  rec.pushedAt = new Date().toISOString();
+  await db.write(); return rec;
 }

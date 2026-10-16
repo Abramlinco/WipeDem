@@ -120,7 +120,7 @@ async function handleMessage(msg, isEdit = false) {
     const adminIds = await getAdminIds(chatId);
     if (adminIds.has(userId)) {
       // A staff reply is how Pulse knows a question has been answered.
-      if (parent) noteReply('telegram', communityId, parent, true);
+      if (parent) noteReply('telegram', communityId, parent, true, msg.text || msg.caption || '');
       // Staff are normally not read. PULSE_CAPTURE_STAFF=true is for testing with your own admin account.
       if (config.pulseCaptureStaff && !isEdit) {
         captureMessage({

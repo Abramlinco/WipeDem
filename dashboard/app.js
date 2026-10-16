@@ -93,6 +93,8 @@ const ICONS = {
   network: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M12 7v5M12 12 6.3 16.5M12 12l5.7 4.5"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9c.2.6.8 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
   pulse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 4 12 2.5-6H21"/></svg>',
+  faqs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v12H8l-4 3z"/><path d="M8 9h8M8 13h5"/></svg>',
+  technical: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="m8.5 12 2.3 2.3 4.7-5"/></svg>',
   campaigns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M8 14h3M8 18h7"/></svg>',
   menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
@@ -112,7 +114,7 @@ const icon = (name) => raw(`<span class="ic" aria-hidden="true">${ICONS[name]}</
 
 const NAV = [
   ['home', 'Home', 'home'], ['discord', 'Discord', 'discord'], ['telegram', 'Telegram', 'telegram'],
-  ['pulse', 'Pulse', 'pulse'], ['campaigns', 'Campaign planner', 'campaigns'], ['reports', 'Reports', 'reports'], ['network', 'Network', 'network'], ['settings', 'Settings', 'settings']
+  ['pulse', 'Pulse', 'pulse'], ['campaigns', 'Campaign planner', 'campaigns'], ['faqs', 'FAQs Intelligence', 'faqs'], ['technical', 'Technical Push', 'technical'], ['reports', 'Reports', 'reports'], ['network', 'Network', 'network'], ['settings', 'Settings', 'settings']
 ];
 
 function route() {
@@ -258,6 +260,8 @@ async function loadPage(page, opts = {}) {
     else if (page === 'discord' || page === 'telegram') await loadPlatform(page);
     else if (page === 'pulse') await loadPulse(sub);
     else if (page === 'campaigns') await loadCampaignPlanner();
+    else if (page === 'faqs') await loadFaqIntelligence();
+    else if (page === 'technical') await loadTechnicalPush();
     else if (page === 'reports') await loadReports();
     else if (page === 'network') await loadNetwork();
     else if (page === 'settings') await loadSettings(sub);
@@ -737,10 +741,75 @@ async function saveSetting(method, path, body, focusId) {
   } catch (e) { fail(e); drawSettings(); }
 }
 
+
+/* FAQs Intelligence and Technical Push */
+let faqRows = [], techRows = [];
+function communityOptions(selected = '') {
+  return state.me.communities.map(c => html`<option value="${c.key}" ${c.key === selected ? 'selected' : ''}>${c.name} · ${PLAT[c.platform]}</option>`);
+}
+async function loadFaqIntelligence() {
+  const cs = state.me.communities || [];
+  if (!cs.length) return setPage(html`<div class="topbar"><h1>FAQs Intelligence</h1></div>${onboarding(null)}`);
+  const key = state.scope !== 'all' && cs.some(c=>c.key===state.scope) ? state.scope : cs[0].key;
+  const c = cs.find(x=>x.key===key) || cs[0];
+  faqRows = await api(`/pulse/faq-intelligence${qs({community:key})}`);
+  setPage(html`<div class="topbar"><div><h1>FAQs Intelligence</h1><div class="muted">Discover repeated questions and useful moderator answers from community conversations.</div></div><div class="tools"><select id="faq-community">${communityOptions(key)}</select><select id="faq-days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="faq-scan">Scan conversations</button></div></div>
+  <div class="panel"><div class="pad"><b>Conversation-led knowledge discovery</b><p class="muted">Sentinel compares captured questions and concerns, moderator replies, existing knowledge and configured feed stories. Draft answers are not verified facts until reviewed.</p></div></div>
+  ${faqRows.length ? faqRows.map(r=>html`<div class="panel"><div class="panelhead"><h2>FAQ draft · ${r.topic} <span>${r.occurrenceCount} report(s) · ${r.status}</span></h2></div><div class="pad"><p><b>Question:</b> ${r.question}</p><label class="fld"><span>Proposed answer</span><textarea data-faq-answer="${r.id}" rows="5">${r.answer}</textarea></label><p class="muted">${r.verificationNote||''}</p><details><summary>Evidence (${r.evidence?.length||0})</summary>${(r.evidence||[]).map(e=>html`<p class="muted">${e.platform} · ${e.channelName}: ${e.text} ${e.url?html`<a href="${e.url}" target="_blank" rel="noopener">Open message</a>`:''}</p>`)}</details><details><summary>Sources (${r.sources?.length||0})</summary>${(r.sources||[]).map(x=>html`<p><a href="${x.url}" target="_blank" rel="noopener">${x.title}</a></p>`)}</details><div class="tools"><button class="btn primary" data-act="faq-approve" data-id="${r.id}">Approve into Facts</button><button class="btn" data-act="faq-save" data-id="${r.id}">Save edits</button><button class="btn" data-act="faq-dismiss" data-id="${r.id}">Dismiss</button></div></div></div>`) : html`<div class="panel"><div class="pad empty">No drafts yet. Scan conversations to discover recurring or unanswered questions.</div></div>`}`);
+}
+async function loadTechnicalPush() {
+  const cs = state.me.communities || [];
+  if (!cs.length) return setPage(html`<div class="topbar"><h1>Technical Push</h1></div>${onboarding(null)}`);
+  const key = state.scope !== 'all' && cs.some(c=>c.key===state.scope) ? state.scope : cs[0].key;
+  const c = cs.find(x=>x.key===key) || cs[0];
+  const data = await api(`/pulse/technical-push${qs({community:key})}`);
+  techRows = data.reports.filter(r=>r.communityKey===key);
+  const cfg = data.settings[key] || {};
+  setPage(html`<div class="topbar"><div><h1>Technical Push</h1><div class="muted">Aggregate reported technical issues into evidence-led developer reports.</div></div><div class="tools"><select id="tech-community">${communityOptions(key)}</select><select id="tech-days"><option value="1">24 hours</option><option value="7" selected>7 days</option><option value="30">30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="tech-generate">Generate report</button></div></div>
+  <div class="panel"><div class="panelhead"><h2>Delivery preferences <span>${c.name}</span></h2></div><div class="pad"><div class="formgrid">
+  <label class="fld"><span>Cadence preference</span><select id="tech-cadence"><option value="daily" ${cfg.cadence==='daily'?'selected':''}>Daily</option><option value="weekly" ${(!cfg.cadence||cfg.cadence==='weekly')?'selected':''}>Weekly</option><option value="monthly" ${cfg.cadence==='monthly'?'selected':''}>Monthly</option></select></label>
+  <label class="fld"><span>Delivery</span><select id="tech-delivery"><option value="download" ${cfg.delivery!=='auto'?'selected':''}>Manual download</option><option value="auto" ${cfg.delivery==='auto'?'selected':''}>Send to channel</option></select></label>
+  <label class="fld"><span>Destination platform</span><select id="tech-platform"><option value="">Choose</option><option value="discord" ${cfg.destinationPlatform==='discord'?'selected':''}>Discord</option><option value="telegram" ${cfg.destinationPlatform==='telegram'?'selected':''}>Telegram</option></select></label>
+  <label class="fld"><span>Destination community ID</span><input id="tech-destination" value="${cfg.destinationCommunityId||''}" placeholder="Server or chat ID"></label>
+  <label class="fld"><span>Destination channel ID</span><input id="tech-channel" value="${cfg.destinationChannelId||''}" placeholder="Discord channel ID; optional for Telegram"></label>
+  </div><button class="btn primary" data-act="tech-settings" style="margin-top:12px">Save settings</button><p class="muted">This patch supports manual generation, downloads, and manager-triggered channel delivery. Saved cadence is a preference only; scheduled automatic delivery is not enabled in this first patch.</p></div></div>
+  ${techRows.length?techRows.map(r=>html`<div class="panel"><div class="panelhead"><h2>Technical report · ${dateShort(r.createdAt)} <span>${r.issueCount} issue reports · ${r.periodDays} days</span></h2><span class="tag">${r.pushedAt?'Sent':'Ready'}</span></div><div class="pad"><pre style="white-space:pre-wrap;font:inherit">${r.content}</pre><div class="tools"><button class="btn primary" data-act="tech-download" data-id="${r.id}">Download report</button><button class="btn" data-act="tech-push" data-id="${r.id}">Send to channel</button></div></div></div>`) : html`<div class="panel"><div class="pad empty">No technical reports yet. Generate a report to aggregate recent issues.</div></div>`}`);
+}
+async function saveFaq(id, status) {
+  const answer = $(`[data-faq-answer="${id}"]`)?.value || '';
+  await api(`/pulse/faq-intelligence/${enc(id)}`, {method:'PATCH',body:{answer,status}});
+  toast(status==='approved'?'FAQ approved into Facts':status==='dismissed'?'FAQ dismissed':'FAQ saved');
+  await loadFaqIntelligence();
+}
+function downloadText(name, text) {
+  const blob = new Blob([text],{type:'text/plain;charset=utf-8'}), url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
 /* =====================================================================
    Events (one place, so nothing is attached inline)
 ===================================================================== */
 const ACTS = {
+  'faq-scan': async () => {
+    const key=$('#faq-community')?.value||'', c=state.me.communities.find(x=>x.key===key); if(!c)return toast('Choose a community',true);
+    const r=await api(`/pulse/faq-intelligence/${c.platform}/${enc(c.id)}/scan`,{method:'POST',body:{days:Number($('#faq-days')?.value||30)}});
+    toast(`Scan complete: ${r.created} FAQ draft(s)`); await loadFaqIntelligence();
+  },
+  'faq-save': el => saveFaq(el.dataset.id,'pending'),
+  'faq-approve': el => saveFaq(el.dataset.id,'approved'),
+  'faq-dismiss': el => saveFaq(el.dataset.id,'dismissed'),
+  'tech-generate': async () => {
+    const key=$('#tech-community')?.value||'', c=state.me.communities.find(x=>x.key===key); if(!c)return toast('Choose a community',true);
+    const r=await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/generate`,{method:'POST',body:{days:Number($('#tech-days')?.value||7)}});
+    toast(`Report generated: ${r.issueCount} matching reports`); await loadTechnicalPush();
+  },
+  'tech-settings': async () => {
+    const key=$('#tech-community')?.value||'', c=state.me.communities.find(x=>x.key===key); if(!c)return toast('Choose a community',true);
+    await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/settings`,{method:'POST',body:{cadence:$('#tech-cadence').value,delivery:$('#tech-delivery').value,destinationPlatform:$('#tech-platform').value,destinationCommunityId:$('#tech-destination').value.trim(),destinationChannelId:$('#tech-channel').value.trim(),enabled:false}});
+    toast('Settings saved'); await loadTechnicalPush();
+  },
+  'tech-download': el => { const r=techRows.find(x=>x.id===el.dataset.id); if(r)downloadText(`sentinel-technical-report-${r.createdAt.slice(0,10)}.txt`,r.content); },
+  'tech-push': async el => { await api(`/pulse/technical-push/${enc(el.dataset.id)}/push`,{method:'POST',body:{}}); toast('Report sent'); await loadTechnicalPush(); },
   'add-community': (el, e) => { e.stopPropagation(); openAddCommunity(el.dataset.platform); },
   'tg-login': telegramLogin,
   'tg-connect': async () => { await telegramLogin(); },

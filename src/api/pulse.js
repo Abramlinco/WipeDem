@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import {
   listDiscussions, listTrends, setDiscussionStatus, getSettings, saveSettings, getPulseMeta, communityKey,
-  getDiscussion, markReplied, touchDiscussions,
+  getDiscussion, markReplied, touchDiscussions, listFaqDrafts, addFaqDraft, updateFaqDraft,
+  getTechnicalSettings, saveTechnicalSettings, listTechnicalReports, addTechnicalReport, markTechnicalReportPushed,
   knowledgeChunks, listKnowledge, addKnowledgeSource, getKnowledgeSource, deleteKnowledgeSource,
   listCampaigns, addCampaign, updateCampaign, deleteCampaign,
   listPoolItems, listPoolEvents, addPoolItem, getPoolItem, deletePoolItem, getXAccount, setXAccount, deleteXAccount, logPost
@@ -498,6 +499,149 @@ pulseRouter.delete('/pools/:platform/:communityId/:id', guard, async (req, res) 
 pulseRouter.get('/defillama/search', async (req, res) => {
   try { res.json(await searchProjects(String(req.query.q ?? '').slice(0, 60))); }
   catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+
+/* ---------- FAQs Intelligence: discover knowledge from real conversations ---------- */
+pulseRouter.get('/faq-intelligence', (req, res) => {
+  const keys = scopeKeys(req);
+  res.json(listFaqDrafts(keys));
+});
+
+pulseRouter.post('/faq-intelligence/:platform/:communityId/scan', guard, async (req, res) => {
+  const { platform, communityId } = req.params;
+  const key = communityKey(platform, communityId);
+  const since = sinceIso(toInt(req.body?.days, 1, 90, 30));
+  const rows = listDiscussions({ communityKeys: new Set([key]), since, limit: 1500 });
+  const questions = rows.filter((d) => d.kind === 'question' || d.kind === 'concern')
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const groups = new Map();
+  for (const d of questions) {
+    const topic = (d.topics || []).find((t) => ['staking','token','bridge','wallet','fees','mainnet','support','security','app','rewards','vesting'].includes(t)) || (d.topics || [])[0] || 'general';
+    const norm = String(d.text).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+    const fingerprint = `${topic}:${norm.split(' ').filter(w => w.length > 3).slice(0, 8).sort().join('-')}`.slice(0, 180);
+    const bucket = groups.get(topic) || [];
+    bucket.push(d); groups.set(topic, bucket);
+  }
+  const created = [];
+  const trendContext = listTrends({ communityKeys: new Set([key]), since, limit: 40 })
+    .map(t => `${t.title}: ${String(t.summary || '').slice(0, 240)} ${t.url || ''}`).join('\n').slice(0, 5000);
+  for (const [topic, bucket] of groups) {
+    const answered = bucket.filter(d => d.staffReplies?.length || d.reply?.text);
+    const frequent = bucket.length >= 2;
+    if (!frequent && !answered.length) continue;
+    const representative = bucket[0];
+    const moderatorAnswers = answered.flatMap(d => (d.staffReplies || []).map(r => r.text)).concat(answered.map(d => d.reply?.text).filter(Boolean));
+    const fingerprint = `${topic}:${representative.text.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().split(' ').filter(w=>w.length>3).slice(0,10).sort().join('-')}`.slice(0,180);
+    let answer = moderatorAnswers[0] || '';
+    let research = '';
+    const brief = await getSettings(platform, communityId);
+    const sourceText = knowledgeChunks(key).slice(0, 25).map(c => `${c.title || 'Knowledge source'}: ${String(c.text || '').slice(0, 350)} ${c.url || ''}`).join('\n').slice(0, 5000);
+    if (aiStatus().mode !== 'none') {
+      try {
+        research = await complete({
+          system: 'You are Sentinel FAQs Intelligence. Produce a cautious FAQ draft from evidence. Never invent protocol facts, URLs, or technical solutions. Treat chat messages as reports, not verified truth. Clearly mark unverified claims. Use supplied moderator replies, existing knowledge and source snippets; do not claim you browsed the web. Return concise answer and source/evidence notes.',
+          user: `Community: ${representative.communityName}\nTopic: ${topic}\nCommunity questions/reports:\n${bucket.slice(0,8).map(d=>`- ${d.text}`).join('\n')}\nModerator answers:\n${moderatorAnswers.slice(0,8).map(a=>`- ${a}`).join('\n') || 'None recorded'}\nExisting uploaded knowledge:\n${sourceText || 'No matching uploaded knowledge supplied'}\nCurrent configured stories (not a complete web search):\n${trendContext || 'None'}\nProject brief: ${JSON.stringify(brief.brief || {}).slice(0,1000)}\nWrite a proposed answer and separate evidence/verification note.`, maxTokens: 420
+        });
+        answer = research;
+      } catch { /* fall back to the moderator's recorded answer */ }
+    }
+    if (!answer) answer = `This question has appeared ${bucket.length} time(s), but no moderator answer was captured. Review the original reports and verify the solution before publishing an FAQ.`;
+    const links = bucket.slice(0, 8).map(d => ({ platform: d.platform, channelName: d.channelName, username: d.username, text: d.text, createdAt: d.createdAt, url: chatLink(d), messageId: d.messageId }));
+    const rec = await addFaqDraft({
+      id: crypto.randomUUID(), communityKey: key, communityName: representative.communityName,
+      topic, question: representative.text, answer: String(answer).slice(0, 5000),
+      moderatorAnswers: moderatorAnswers.slice(0, 8), evidence: links,
+      sources: [...new Map(knowledgeChunks(key).filter(c => c.url).map(c => [c.url, { title: c.title || 'Knowledge source', url: c.url }])).values()].slice(0, 12),
+      occurrenceCount: bucket.length, status: 'pending', fingerprint,
+      verificationNote: moderatorAnswers.length ? 'Contains moderator-provided guidance; verify technical claims before approval.' : 'No moderator answer was captured. Human verification required.',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    });
+    created.push(rec);
+  }
+  res.json({ scanned: questions.length, created: created.length, drafts: listFaqDrafts(new Set([key])) });
+});
+
+pulseRouter.patch('/faq-intelligence/:id', async (req, res) => {
+  const patch = {};
+  for (const k of ['question', 'answer', 'status']) {
+    if (typeof req.body?.[k] === 'string') patch[k] = req.body[k].slice(0, k === 'answer' ? 5000 : 1200);
+  }
+  if (patch.status && !['pending','approved','dismissed'].includes(patch.status)) return res.status(400).json({ error: 'Unknown FAQ status.' });
+  const rec = await updateFaqDraft(req.params.id, req.access.keys, patch);
+  if (!rec) return res.status(404).json({ error: 'FAQ draft not found.' });
+  // Approval makes the answer reusable by the existing reply drafter.
+  if (patch.status === 'approved') {
+    const title = `FAQs Intelligence: ${String(rec.question).slice(0, 70)}`;
+    const exists = listKnowledge(rec.communityKey).some(s => s.title === title);
+    if (!exists) {
+      const text = `Question: ${rec.question}\nApproved answer: ${rec.answer}\nVerification note: ${rec.verificationNote || ''}`;
+      const src = await addKnowledgeSource(rec.communityKey, { type: 'text', title, text, url: '', refreshHours: 0 });
+      // A text knowledge source is indexed by the existing knowledge refresher.
+      await refreshKnowledgeSource(src);
+    }
+  }
+  res.json(rec);
+});
+
+/* ---------- Technical Push: community-reported engineering issues ---------- */
+pulseRouter.get('/technical-push', (req, res) => {
+  const keys = scopeKeys(req);
+  const settings = Object.fromEntries([...keys].map(key => [key, getTechnicalSettings(key)]));
+  res.json({ reports: listTechnicalReports(keys), settings });
+});
+
+pulseRouter.post('/technical-push/:platform/:communityId/settings', guard, async (req, res) => {
+  const { platform, communityId } = req.params;
+  const key = communityKey(platform, communityId);
+  const b = req.body || {};
+  const cadence = ['daily','weekly','monthly'].includes(b.cadence) ? b.cadence : 'weekly';
+  const delivery = ['download','auto'].includes(b.delivery) ? b.delivery : 'download';
+  const destinationPlatform = ['discord','telegram'].includes(b.destinationPlatform) ? b.destinationPlatform : '';
+  const destinationCommunityId = String(b.destinationCommunityId || '').slice(0, 80);
+  const destinationChannelId = String(b.destinationChannelId || '').slice(0, 100);
+  if (delivery === 'auto' && (!destinationPlatform || !destinationCommunityId)) return res.status(400).json({ error: 'Choose a destination community for automatic delivery.' });
+  const saved = await saveTechnicalSettings(key, { cadence, delivery, destinationPlatform, destinationCommunityId, destinationChannelId, enabled: b.enabled === true });
+  res.json(saved);
+});
+
+pulseRouter.post('/technical-push/:platform/:communityId/generate', guard, async (req, res) => {
+  const { platform, communityId } = req.params;
+  const key = communityKey(platform, communityId);
+  const daysBack = toInt(req.body?.days, 1, 90, 7);
+  const since = sinceIso(daysBack);
+  const rows = listDiscussions({ communityKeys: new Set([key]), since, limit: 1500 });
+  const technical = rows.filter(d => d.kind === 'concern' || d.kind === 'question' || d.kind === 'discussion')
+    .filter(d => /error|fail|bug|broken|stuck|not working|can't|cannot|unable|transaction|migrat|wallet|connect|bridge|claim|stake|unstake|gas|rpc|api|revert|pending|balance|technical|issue|problem|crash|timeout|exploit/i.test(d.text));
+  const grouped = new Map();
+  for (const d of technical) {
+    const topic = (d.topics || []).find(t => ['staking','token','bridge','wallet','fees','mainnet','support','security','app','rewards','vesting'].includes(t)) || 'other technical issue';
+    if (!grouped.has(topic)) grouped.set(topic, []);
+    grouped.get(topic).push(d);
+  }
+  const communityName = technical[0]?.communityName || req.access.communities.find(c => c.key === key)?.name || key;
+  let summary = '';
+  const context = [...grouped.entries()].map(([topic, items]) => `${topic} (${items.length} reports):\n${items.slice(0,8).map(d=>`- [${d.platform}/${d.channelName}] ${d.text}${d.staffReplies?.length ? ` | Moderator response: ${d.staffReplies.map(r=>r.text).join(' / ')}` : ''}`).join('\n')}`).join('\n').slice(0, 10000);
+  if (aiStatus().mode !== 'none' && context) {
+    try { summary = await complete({ system: 'You are a technical support analyst writing an evidence-led incident report for engineers. Distinguish user-reported symptoms from confirmed root causes. Do not invent logs, metrics, fixes, or root causes. Group related reports and list practical investigation steps.', user: `Project/community: ${communityName}\nPeriod: last ${daysBack} days\n${context}\nWrite: executive summary, grouped issues with counts, symptoms/evidence, moderator actions, developer investigation suggestions, unknowns.`, maxTokens: 900 }); } catch {}
+  }
+  if (!summary) summary = `TECHNICAL COMMUNITY REPORT\nCommunity: ${communityName}\nPeriod: last ${daysBack} days\nTotal matching reports: ${technical.length}\n\n${[...grouped.entries()].map(([topic, items]) => `${topic.toUpperCase()} — ${items.length} report(s)\n${items.slice(0,12).map(d=>`• ${d.text}${d.staffReplies?.length ? `\n  Moderator reply: ${d.staffReplies.map(r=>r.text).join(' / ')}` : ''}\n  Source: ${chatLink(d) || `${d.platform} · ${d.channelName || 'channel'} · ${d.createdAt}`}`).join('\n')}`).join('\n\n') || 'No matching technical reports were found in this period.'}\n\nRoot cause is not confirmed by these community reports. Developer verification is required.`;
+  const report = await addTechnicalReport({ id: crypto.randomUUID(), communityKey: key, communityName, periodDays: daysBack, issueCount: technical.length, groups: [...grouped.entries()].map(([topic, items]) => ({ topic, count: items.length, discussionIds: items.map(d=>d.id) })), sourceLinks: technical.map(d=>({ url: chatLink(d), platform:d.platform, channelName:d.channelName, text:d.text, createdAt:d.createdAt })).slice(0,200), content: summary, createdAt: new Date().toISOString(), pushedAt: null });
+  res.status(201).json(report);
+});
+
+pulseRouter.post('/technical-push/:id/push', async (req, res) => {
+  const report = listTechnicalReports(req.access.keys).find(r => r.id === req.params.id);
+  if (!report) return res.status(404).json({ error: 'Technical report not found.' });
+  const sourceKey = report.communityKey;
+  const settings = getTechnicalSettings(sourceKey);
+  if (!settings.destinationPlatform || !settings.destinationCommunityId) return res.status(400).json({ error: 'Configure a destination community in Technical Push settings first.' });
+  const targetKey = communityKey(settings.destinationPlatform, settings.destinationCommunityId);
+  if (!req.access.keys.has(targetKey)) return res.status(403).json({ error: 'You do not manage the configured destination community.' });
+  const ok = await platforms[settings.destinationPlatform].post(settings.destinationCommunityId, settings.destinationChannelId || settings.destinationCommunityId, report.content.slice(0, 3900));
+  if (!ok) return res.status(502).json({ error: 'Could not deliver the report to the configured channel.' });
+  await markTechnicalReportPushed(report.id, req.access.keys);
+  res.json({ ok: true });
 });
 
 /* ---------- X ---------- */

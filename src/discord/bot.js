@@ -102,7 +102,7 @@ async function handleMessage(message, isEdit = false) {
     const replyToId = message.reference?.messageId || '';
     if (isRealAdmin(member, settings)) {
       // A staff reply is how Pulse knows a question has been answered.
-      if (replyToId) noteReply('discord', guildId, replyToId, true);
+      if (replyToId) noteReply('discord', guildId, replyToId, true, message.content);
       // Staff are normally not read. PULSE_CAPTURE_STAFF=true is for testing with your own admin account.
       if (config.pulseCaptureStaff && !isEdit && message.channel.permissionsFor?.(message.guild.roles.everyone)?.has(PermissionsBitField.Flags.ViewChannel)) {
         captureMessage({

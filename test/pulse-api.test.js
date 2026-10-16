@@ -10,6 +10,7 @@ process.env.PULSE_ENABLED = 'false'; // tests never touch the real internet
 process.env.AI_PROVIDER = 'none'; // tests use the built-in drafter, never a real AI
 
 const { createApp } = await import('../src/server.js');
+const { config } = await import('../src/config.js');
 const { setAccessProvider } = await import('../src/access.js');
 const db = await import('../src/db.js');
 const { loginAs } = await import('../src/auth/sessions.js');
@@ -239,7 +240,16 @@ test('X account keys can only be saved with an encryption secret, all four keys,
   assert.equal(st.costs.postWithLink, 0.2);
   assert.equal((await api('/api/pulse/x/telegram/-200')).status, 403);
   assert.equal((await post('/api/pulse/x/telegram/-200/connect', { apiKey: 'a', apiSecret: 'b', accessToken: 'c', accessSecret: 'd' })).status, 403);
-  const noSecret = await post('/api/pulse/x/telegram/-100/connect', { apiKey: 'a', apiSecret: 'b', accessToken: 'c', accessSecret: 'd' });
+  // The developer's local .env may contain SENTINEL_SECRET. Explicitly simulate
+  // the missing-secret condition this assertion is intended to cover.
+  const originalSecretKey = config.secretKey;
+  let noSecret;
+  try {
+    config.secretKey = '';
+    noSecret = await post('/api/pulse/x/telegram/-100/connect', { apiKey: 'a', apiSecret: 'b', accessToken: 'c', accessSecret: 'd' });
+  } finally {
+    config.secretKey = originalSecretKey;
+  }
   assert.equal(noSecret.status, 400);
   assert.match((await noSecret.json()).error, /SENTINEL_SECRET/);
   assert.equal((await post('/api/pulse/x/refresh', {})).status, 400, 'reading X is off without a key');
