@@ -1,6 +1,3 @@
-import fs from 'fs';
-import path from 'path';
-
 // Rules are lists of plain phrases a community manager types in. No regex
 // knowledge needed. Matching is case insensitive, ignores extra spaces,
 // treats phone keyboard curly apostrophes (I’m) the same as straight ones
@@ -15,7 +12,7 @@ const norm = (s) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-const escapeRe = (s) => s.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&');
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const cache = new Map();
 
 function phraseRegex(phrase) {
@@ -29,122 +26,83 @@ function phraseRegex(phrase) {
   return re;
 }
 
-/** Helper function to read the db.json file and check if a user is cross-verified */
-function checkUserVerifiedID(platformUserId) {
-  try {
-    const dbPath = path.resolve(process.cwd(), 'db.json');
-    if (!fs.existsSync(dbPath)) return false;
+const URL_RE = /\b((?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?)/gi;
+const KNOWN_SHORTENERS = new Set([
+  'bit.ly', 'tinyurl.com', 'cutt.ly', 'is.gd', 'rebrand.ly', 'shorturl.at',
+  'tiny.cc', 'rb.gy', 'buff.ly', 't.co', 'ow.ly', 'shrtco.de', 'v.gd', 'lnkd.in'
+]);
+// A Discord invite to somewhere else is one of the most common raid bot and
+// phishing patterns there is, an account auto replies to ordinary chat
+// with "continue the conversation here" and a link to a cloned server.
+// An ordinary member almost never has a legitimate reason to post an
+// invite to a different server, so this is checked unconditionally,
+// without needing a keyword list at all.
+const INVITE_RE = /discord(?:app\.com|\.com|\.gg)\/(?:invite\/)?([a-z0-9-]{2,32})/i;
 
-    const fileContent = fs.readFileSync(dbPath, 'utf8');
-    const dbData = JSON.parse(fileContent);
+function domainOf(url) {
+  try { return new URL(url.startsWith('http') ? url : `http://${url}`).hostname.toLowerCase(); }
+  catch { return null; }
+}
 
-    // Look for common JSON-store layouts ("users", "accounts", or top-level array)
-    const usersList = dbData.users || dbData.accounts || (Array.isArray(dbData) ? dbData : Object.values(dbData));
+// The domain itself is often ordinary looking and tells you nothing, a
+// scam site rarely advertises itself. The far more reliable signal is the
+// behavior around it, someone pushing a link at a person who never asked
+// for one. Any of these phrases next to any link at all is treated as
+// suspicious, regardless of what the link's domain happens to be.
+const PUSH_PHRASES = [
+  'send me this link', 'send you this link', 'send me the link', 'here is the link',
+  "here's the link", 'click this link', 'click here', 'apply here', 'claim here',
+  'verify here', 'use this link', 'follow this link'
+];
+function hasPushPhrase(t) {
+  return PUSH_PHRASES.some((p) => phraseRegex(p)?.test(t));
+}
 
-    if (!Array.isArray(usersList)) return false;
-
-    // Search if this user ID matches your database fields and is fully set up
-    return usersList.some(user => 
-      user && 
-      (user.discordId === platformUserId || user.id === platformUserId) && 
-      (user.telegramId || user.connectedTelegram === true || user.telegram)
-    );
-  } catch (err) {
-    console.error('[Sentinel DB Reader Error]', err.message);
-    return false;
+// Signals that need no keyword list at all, so a brand new scam domain
+// posted for the first time is still caught: an invite to a different
+// Discord server, a raw IP address instead of a name, a punycode domain
+// (used to fake a familiar looking name with foreign lookalike letters),
+// or a known link shortener, which hides the real destination until
+// someone has already clicked it.
+function linkRisk(text, ownInviteCodes, strictMode) {
+  const invite = text.match(INVITE_RE);
+  if (invite && !(ownInviteCodes && ownInviteCodes.has(invite[1].toLowerCase()))) {
+    return { url: invite[0], why: 'invites to a different Discord server, a common raid and phishing tactic' };
   }
+  const matches = [...text.matchAll(URL_RE)].map((m) => m[1]);
+  if (!matches.length) return null;
+
+  // Strict mode, the default, treats any link at all from a non admin as
+  // not allowed, the policy being nobody but your own team should be
+  // dropping links in chat. No domain reputation guessing needed.
+  if (strictMode) {
+    return { url: matches[0], why: 'links are reserved for admins and moderators here' };
+  }
+
+  const t = norm(text);
+  if (hasPushPhrase(t)) {
+    return { url: matches[0], why: 'pushes a link at someone who never asked for one' };
+  }
+  for (const url of matches) {
+    const host = domainOf(url);
+    if (!host) continue;
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host)) return { url, why: 'links straight to a numeric address, not a real domain' };
+    if (host.startsWith('xn--') || host.includes('.xn--')) return { url, why: 'uses a disguised domain name' };
+    if (KNOWN_SHORTENERS.has(host)) return { url, why: 'uses a link shortener that hides the real destination' };
+  }
+  return null;
 }
 
 /**
  * Check a message against one community's rules. Only ever called for people
  * who are NOT on the real, live admin list. Real admins are never checked.
- * 
- * NOTE: Changed to async to safely support dynamic db.json checking hooks.
+ * ownInviteCodes, Discord only, is the set of this server's own invite
+ * codes, so a link back to the server itself is never wrongly flagged.
  */
-export async function checkMessage(text, platformMessage, rules) {
-  // If the middle rules parameter is an object/array, shift arguments to handle backwards compatibility
-  let actualRules = rules;
-  let msgObj = platformMessage;
-  if (platformMessage && typeof platformMessage === 'object' && !platformMessage.mentions && !platformMessage.content) {
-    actualRules = platformMessage;
-    msgObj = null;
-  }
-
+export function checkMessage(text, rules, ownInviteCodes) {
   if (!text || typeof text !== 'string') return { flagged: false };
   const t = norm(text);
-
-  // =========================================================
-  // 1. BEHAVIORAL CHECK: Mass Mention Spam (Discord Only)
-  // =========================================================
-  if (msgObj && msgObj.mentions && msgObj.mentions.users && msgObj.mentions.users.size > 3) {
-    return {
-      flagged: true,
-      ruleKey: 'mass_mention',
-      ruleLabel: 'Mass Mention Spam',
-      matchedPhrase: `${msgObj.mentions.users.size} pings`,
-      penalty: { mode: 'mute', minutes: 15 } // Force auto-mute for raiders
-    };
-  }
-
-    // =========================================================
-  // 2. BEHAVIORAL CHECK: Smart Link & Identity Verification
-  // =========================================================
-  const urlRegex = /(https?:\/\/[^\s>]+)/g;
-  const links = t.match(urlRegex);
-
-  if (links && msgObj) {
-    const authorId = msgObj.author?.id || msgObj.from?.id;
-    const identityIsVerified = authorId ? checkUserVerifiedID(authorId) : false;
-
-    const scamTriggers = ['support', 'ticket', 'assistance', 'verify', 'claim', 'help', 'follow', 'here', 'below', 'section', 'forum', 'appropriate', 'dm'];
-    const triggersFound = scamTriggers.filter(word => t.includes(word));
-
-    for (const url of links) {
-      const lowerUrl = url.toLowerCase();
-      
-      // Whitelist pass-through: Official community spaces are cleanly bypassed
-      const trustedDomains = ['discord.gg', 'discord.com', 'discordapp.com', 'telegram.me', 't.me', 'quicksilver.zone'];
-      const isOfficialPlatform = trustedDomains.some(domain => lowerUrl.includes(domain));
-
-      // Typosquatting Clone Detection
-      if (lowerUrl.includes('disc') && !isOfficialPlatform) {
-        return {
-          flagged: true,
-          ruleKey: 'custom_scam_links',
-          ruleLabel: 'Phishing Discord Clone Link',
-          matchedPhrase: url,
-          penalty: { mode: 'delete' }
-        };
-      }
-
-      // 🛑 CRITICAL ENFORCEMENT: If it's an outside platform path AND the user is unverified, clear it out
-      if (!isOfficialPlatform && !identityIsVerified) {
-        return {
-          flagged: true,
-          ruleKey: 'custom_scam_links',
-          ruleLabel: '🚨 Unauthorized External Path (Unverified Profile ID)',
-          matchedPhrase: url,
-          penalty: { mode: 'delete' }
-        };
-      }
-
-      // 🛑 DECEPTIVE SHORTCUT TRAP: Even if it's an official invite link, if combined with support scam keywords, intercept it
-      if (!identityIsVerified && triggersFound.length >= 1) {
-        return {
-          flagged: true,
-          ruleKey: 'custom_scam_links',
-          ruleLabel: '🛑 Deceptive Support/Ticket Heuristic Link',
-          matchedPhrase: `${url} (Context: ${triggersFound.join(', ')})`,
-          penalty: { mode: 'delete' }
-        };
-      }
-    }
-  }
-
-  // =========================================================
-  // 3. KEYWORD LOOP: Your original keyword rule comparison engine
-  // =========================================================
-  for (const [key, rule] of Object.entries(actualRules || {})) {
+  for (const [key, rule] of Object.entries(rules || {})) {
     if (!rule?.enabled) continue;
     for (const phrase of rule.keywords || []) {
       const re = phraseRegex(phrase);
@@ -152,9 +110,25 @@ export async function checkMessage(text, platformMessage, rules) {
         return { flagged: true, ruleKey: key, ruleLabel: rule.label, matchedPhrase: phrase, penalty: rule.penalty };
       }
     }
+    if (key === 'suspiciousLinks') {
+      const risk = linkRisk(text, ownInviteCodes, rule.strictMode);
+      if (risk) {
+        return { flagged: true, ruleKey: key, ruleLabel: rule.label, matchedPhrase: `${risk.url} (${risk.why})`, penalty: rule.penalty };
+      }
+    }
   }
-
   return { flagged: false };
+}
+
+// A link from an account created in the last few days is a much stronger
+// signal than the same link from someone with real history in the
+// community, the same "new member link lockdown" idea used by dedicated
+// Discord security bots. Telegram does not expose account creation dates,
+// so this only applies where accountAgeDays is actually known.
+export function newAccountWithLink(text, accountAgeDays, maxDays = 3) {
+  if (accountAgeDays === null || accountAgeDays === undefined) return false;
+  if (accountAgeDays > maxDays) return false;
+  return URL_RE.test(text) || INVITE_RE.test(text);
 }
 
 const MAX_MINUTES = 40320; // 28 days, the longest Discord allows
@@ -187,5 +161,6 @@ export function resolveAction(strikeCount, escalation, penalty) {
 export function actionLabel(tier) {
   if (tier.action === 'mute') return `muted for ${tier.minutes} minutes`;
   if (tier.action === 'flag_for_ban') return 'flagged for ban review';
+  if (tier.action === 'caution') return 'sent an automatic caution';
   return 'message deleted';
 }

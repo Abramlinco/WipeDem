@@ -4,6 +4,9 @@ import { nanoid } from 'nanoid';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { defaultBrief } from './pulse/reply.js';
+import { monthKey } from './pulse/x.js';
+import { poolChunks } from './pulse/pools.js';
 
 // Everything the app remembers lives in one JSON file so you can open
 // data/db.json and see exactly what the bot knows. This is the ONLY file
@@ -24,7 +27,15 @@ const defaultData = {
   cautions: [],         // warnings given to users
   sessions: {},         // login sessions
   dailyStats: {},       // "platform:id" -> { "YYYY-MM-DD": { scanned, flagged } }
-  memberCounts: {}      // "platform:id" -> { "YYYY-MM-DD": memberCount }
+  memberCounts: {},     // "platform:id" -> { "YYYY-MM-DD": memberCount }
+  discussions: [],      // Pulse: relevant community messages (ideas, questions, concerns...)
+  trends: [],           // Pulse: stories gathered from the web by the feeder
+  pulseMeta: { lastRefresh: null, sources: {} }, // Pulse: when feeds last ran and which ones are failing
+  knowledge: { sources: [] }, // Pulse: documents, pages and live data each community lets the drafter use
+  pools: { items: [], events: [] }, // Pulse: pools each community watches, and what changed in them
+  xAccounts: {},   // Pulse: encrypted X keys/tokens per community. Kept apart from settings so they can never be sent to the browser.
+  campaigns: [],    // Pulse: manager-created campaign plans, scoped to a community
+  postLog: []      // Pulse: who posted what, where
 };
 
 // The file is read once at start. From then on memory is the source of truth
@@ -37,6 +48,7 @@ export async function initDb() {
   db.data ||= structuredClone(defaultData);
   // Older data files from earlier versions are missing the newer sections.
   for (const k of Object.keys(defaultData)) db.data[k] ??= structuredClone(defaultData[k]);
+  rebuildMessageIndex();
   await db.write();
 }
 
@@ -63,9 +75,24 @@ export function defaultRuleSet() {
       'i am an admin', "i'm an admin", 'i am a moderator', "i'm a moderator",
       'this is the admin', 'as an admin', 'official admin here'
     ]),
+    suspiciousLinks: {
+      ...rule('Suspicious links', true, [
+        'bit.ly', 'tinyurl.com', 'cutt.ly', 'is.gd', 'rebrand.ly', 'shorturl.at', 'tiny.cc', 'rb.gy',
+        'claim your airdrop', 'connect wallet to claim', 'verify your wallet', 'limited time claim'
+      ]),
+      // On, by default, means no link at all from anyone who is not a real
+      // admin or moderator, not just links that look risky. This is the
+      // strict, lock it down setting. Turn it off to go back to only
+      // catching shorteners, disguised domains, and pushed links.
+      strictMode: true
+    },
     bannedWords: rule('Banned words', false, [])
   };
 }
+
+export const DEFAULT_LINK_BLOCKED_MESSAGE =
+  'Links are not allowed here except from admins and moderators. If you have a question or a complaint, ' +
+  'please open a support ticket and tag a mod there.';
 
 export function defaultEscalation() {
   return {
@@ -80,16 +107,36 @@ export const DEFAULT_CAUTION =
   'Ignore anyone who does, and report them here.';
 
 function normalizeSettings(s = {}) {
-  s.rules ||= defaultRuleSet();
+  let changed = false;
+  if (!s.rules) { s.rules = defaultRuleSet(); changed = true; }
+  // A community that already saved settings before a new built in rule
+  // existed would otherwise never see it, since its rule set was already
+  // created. Add anything missing, but never touch a rule already there.
+  for (const [key, r] of Object.entries(defaultRuleSet())) {
+    if (!s.rules[key]) { s.rules[key] = r; changed = true; }
+  }
   for (const r of Object.values(s.rules)) {
     r.keywords ||= [];
     r.penalty ||= { mode: 'escalate', minutes: 10 };
   }
-  s.escalation ||= defaultEscalation();
+  if (!s.escalation) { s.escalation = defaultEscalation(); changed = true; }
   s.adminRoleIds ||= [];
-  s.cautionMessage ||= DEFAULT_CAUTION;
+  if (!s.cautionMessage) { s.cautionMessage = DEFAULT_CAUTION; changed = true; }
+  if (!s.linkBlockedMessage) { s.linkBlockedMessage = DEFAULT_LINK_BLOCKED_MESSAGE; changed = true; }
+  if (s.rules.suspiciousLinks && s.rules.suspiciousLinks.strictMode === undefined) {
+    s.rules.suspiciousLinks.strictMode = true;
+    changed = true;
+  }
   s.strikeWindowDays ||= 7;
-  return s;
+  // Pulse: whether this community's chat is read for ideas, plus any feeds
+  // the community manager added themselves.
+  if (s.intelEnabled === undefined) { s.intelEnabled = true; changed = true; }
+  s.intelSources ||= [];
+  // The Project Brief the reply drafter is allowed to use. See src/pulse/reply.js.
+  if (!s.brief) { s.brief = defaultBrief(); changed = true; }
+  if (!s.replyModes) { s.replyModes = { question: 'manual', idea: 'manual', concern: 'manual' }; changed = true; }
+  if (!s.focus) { s.focus = { topics: [], custom: [] }; changed = true; }
+  return { settings: s, changed };
 }
 
 const bucketFor = (platform) =>
@@ -98,13 +145,14 @@ const bucketFor = (platform) =>
 export async function getSettings(platform, id) {
   const bucket = bucketFor(platform);
   const isNew = !bucket[id];
-  bucket[id] = normalizeSettings(bucket[id]);
-  if (isNew) await db.write();
+  const { settings, changed } = normalizeSettings(bucket[id]);
+  bucket[id] = settings;
+  if (isNew || changed) await db.write();
   return bucket[id];
 }
 
 export async function saveSettings(platform, id, settings) {
-  bucketFor(platform)[id] = normalizeSettings(settings);
+  bucketFor(platform)[id] = normalizeSettings(settings).settings;
   await db.write();
   return bucketFor(platform)[id];
 }
@@ -267,6 +315,7 @@ export async function listCautions({ platform, communityId, userId } = {}) {
 /* ------------------------------------------------------------------ */
 
 const pending = new Map(); // "key|date|field" -> n
+let dirty = false;         // Pulse changes waiting to be saved with the next batch
 
 export function bumpStat(key, field, n = 1) {
   const k = `${key}|${today()}|${field}`;
@@ -274,13 +323,14 @@ export function bumpStat(key, field, n = 1) {
 }
 
 export async function flushStats() {
-  if (!pending.size) return;
+  if (!pending.size && !dirty) return;
   for (const [k, n] of pending) {
     const [key, date, field] = k.split('|');
     const day = ((db.data.dailyStats[key] ||= {})[date] ||= { scanned: 0, flagged: 0 });
     day[field] = (day[field] || 0) + n;
   }
   pending.clear();
+  dirty = false;
   await db.write();
 }
 
@@ -351,4 +401,345 @@ export async function saveSessionRecord(session) {
 export async function deleteSessionRecord(id) {
   delete db.data.sessions[id];
   await db.write();
+}
+
+/* ------------------------------------------------------------------ */
+/* Pulse: community discussions                                        */
+/* ------------------------------------------------------------------ */
+
+// Chat is busy, so these changes stay in memory and are saved with the next
+// batch (every 15 seconds, see flushStats) instead of rewriting the file on
+// every message.
+const MAX_DISCUSSIONS = 5000;
+const msgIndex = new Map(); // "platform:community:messageId" -> discussion, so replies can find their parent
+const msgKey = (platform, communityId, messageId) => `${platform}:${communityId}:${messageId}`;
+
+function rebuildMessageIndex() {
+  msgIndex.clear();
+  for (const d of db.data.discussions) {
+    if (d.messageId) msgIndex.set(msgKey(d.platform, d.communityId, d.messageId), d);
+  }
+}
+
+export function addDiscussion(item) {
+  const record = {
+    id: nanoid(10), status: 'new', replies: 0, staffReplied: false,
+    createdAt: new Date().toISOString(), ...item
+  };
+  db.data.discussions.unshift(record);
+  if (record.messageId) msgIndex.set(msgKey(record.platform, record.communityId, record.messageId), record);
+  if (db.data.discussions.length > MAX_DISCUSSIONS) {
+    for (const old of db.data.discussions.splice(MAX_DISCUSSIONS)) {
+      if (old.messageId) msgIndex.delete(msgKey(old.platform, old.communityId, old.messageId));
+    }
+  }
+  dirty = true;
+  return record;
+}
+
+// Someone replied to a message we kept. Counting replies shows which ideas
+// got people talking, and a staff reply marks a question as answered.
+export function noteReply(platform, communityId, parentMessageId, byStaff) {
+  const parent = msgIndex.get(msgKey(platform, String(communityId), String(parentMessageId)));
+  if (!parent) return false;
+  if (byStaff) parent.staffReplied = true; else parent.replies++;
+  dirty = true;
+  return true;
+}
+
+export function listDiscussions({ communityKeys, platform, kind, status, topic, since, limit } = {}) {
+  let out = db.data.discussions;
+  if (communityKeys) out = out.filter(d => communityKeys.has(communityKey(d.platform, d.communityId)));
+  if (platform) out = out.filter(d => d.platform === platform);
+  if (kind) out = out.filter(d => d.kind === kind);
+  if (status) out = out.filter(d => status === 'active' ? (d.status === 'new' || d.status === 'starred') : d.status === status);
+  if (topic) out = out.filter(d => d.topics?.includes(topic));
+  if (since) out = out.filter(d => d.createdAt >= since);
+  return limit ? out.slice(0, limit) : out;
+}
+
+export async function setDiscussionStatus(id, communityKeys, status) {
+  const d = db.data.discussions.find(x => x.id === id);
+  // A person can only touch discussions from communities they manage.
+  if (!d || !communityKeys.has(communityKey(d.platform, d.communityId))) return null;
+  d.status = status;
+  await db.write();
+  return d;
+}
+
+// One discussion, but only if it belongs to a community this person manages.
+export function getDiscussion(id, communityKeys) {
+  const d = db.data.discussions.find(x => x.id === id);
+  return d && communityKeys.has(communityKey(d.platform, d.communityId)) ? d : null;
+}
+
+export async function markReplied(id, communityKeys, text, by) {
+  const d = getDiscussion(id, communityKeys);
+  if (!d) return null;
+  d.reply = { text, by, at: new Date().toISOString() };
+  d.staffReplied = true;
+  d.status = 'done';
+  await db.write();
+  return d;
+}
+
+export async function pruneDiscussions(retentionDays = 30) {
+  const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString();
+  const before = db.data.discussions.length;
+  db.data.discussions = db.data.discussions.filter(d => d.createdAt >= cutoff);
+  if (db.data.discussions.length !== before) { rebuildMessageIndex(); await db.write(); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Pulse: trends gathered from the web                                 */
+/* ------------------------------------------------------------------ */
+
+const MAX_TRENDS = 800;
+
+// ownerKey is null for the built in feeds everyone sees, or a community key
+// for a feed that one community added, which only that community sees.
+export async function upsertTrends(items) {
+  const have = new Set(db.data.trends.map(t => t.id));
+  let added = 0;
+  for (const t of items) {
+    if (have.has(t.id)) continue;
+    db.data.trends.unshift(t);
+    have.add(t.id);
+    added++;
+  }
+  const cutoff = new Date(Date.now() - 14 * 86400000).toISOString();
+  db.data.trends = db.data.trends.filter(t => (t.publishedAt || t.fetchedAt) >= cutoff).slice(0, MAX_TRENDS);
+  await db.write();
+  return added;
+}
+
+export function listTrends({ communityKeys, since, limit } = {}) {
+  let out = db.data.trends.filter(t => !t.ownerKey || !communityKeys || communityKeys.has(t.ownerKey));
+  if (since) out = out.filter(t => (t.publishedAt || t.fetchedAt) >= since);
+  return limit ? out.slice(0, limit) : out;
+}
+
+export async function setSourceStatus(sourceId, status) {
+  db.data.pulseMeta.sources[sourceId] = { ...status, at: new Date().toISOString() };
+}
+export async function finishRefresh() {
+  db.data.pulseMeta.lastRefresh = new Date().toISOString();
+  await db.write();
+}
+export const getPulseMeta = () => db.data.pulseMeta;
+
+// Feeds that individual communities added in their settings.
+export function listCustomSources() {
+  const out = [];
+  for (const [platform, bucket] of [['discord', db.data.discordSettings], ['telegram', db.data.telegramSettings]]) {
+    for (const [id, s] of Object.entries(bucket)) {
+      for (const src of s.intelSources || []) out.push({ ...src, ownerKey: communityKey(platform, id) });
+    }
+  }
+  return out;
+}
+
+// Lets code outside this file say "a discussion changed, save it with the next batch".
+export const touchDiscussions = () => { dirty = true; };
+
+// Communities that switched on focus topics. The feeder reads this.
+export function listFocusSettings() {
+  const out = [];
+  for (const [platform, bucket] of [['discord', db.data.discordSettings], ['telegram', db.data.telegramSettings]]) {
+    for (const [id, s] of Object.entries(bucket)) {
+      if (s.focus?.topics?.length || s.focus?.custom?.length) out.push({ ownerKey: communityKey(platform, id), focus: s.focus });
+    }
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Pulse: knowledge bank                                               */
+/* ------------------------------------------------------------------ */
+
+const KNOWLEDGE_MAX_SOURCES = 30;
+
+export const knowledgeSourcesFor = (key) => db.data.knowledge.sources.filter((s) => s.communityKey === key);
+
+// The list the dashboard shows. The chunks themselves are not sent to the browser.
+export function listKnowledge(key) {
+  return knowledgeSourcesFor(key).map(({ chunks, text, ...rest }) => ({ ...rest, chunkCount: chunks?.length || 0, chars: rest.chars || 0 }));
+}
+
+// Everything a community's drafter may draw on, flattened for searching.
+export function knowledgeChunks(key) {
+  const out = [...poolChunks(db.data.pools.items.filter((p) => p.communityKey === key))];
+  for (const s of knowledgeSourcesFor(key)) {
+    for (const c of s.chunks || []) out.push({ text: c.text, search: c.search || '', live: !!c.live, at: c.at || s.fetchedAt, sourceId: s.id, title: s.title, url: s.url || '' });
+  }
+  return out;
+}
+
+export async function addKnowledgeSource(key, src) {
+  if (knowledgeSourcesFor(key).length >= KNOWLEDGE_MAX_SOURCES) throw new Error(`That is the most sources allowed (${KNOWLEDGE_MAX_SOURCES})`);
+  const record = { id: nanoid(10), communityKey: key, status: 'pending', error: null, chunks: [], fetchedAt: null, lastTried: null, createdAt: new Date().toISOString(), ...src };
+  db.data.knowledge.sources.push(record);
+  await db.write();
+  return record;
+}
+
+// Only a source from a community this person manages.
+export function getKnowledgeSource(id, communityKeys) {
+  const s = db.data.knowledge.sources.find((x) => x.id === id);
+  return s && communityKeys.has(s.communityKey) ? s : null;
+}
+
+export async function saveKnowledgeResult(id, result) {
+  const s = db.data.knowledge.sources.find((x) => x.id === id);
+  if (!s) return;
+  s.chunks = result.chunks; s.chars = result.chars; s.status = 'ok'; s.error = null;
+  if (result.title && s.type !== 'text') s.title = s.title || result.title;
+  s.fetchedAt = s.lastTried = new Date().toISOString();
+  await db.write();
+}
+
+export async function saveKnowledgeError(id, message) {
+  const s = db.data.knowledge.sources.find((x) => x.id === id);
+  if (!s) return;
+  s.status = 'error'; s.error = String(message).slice(0, 200); s.lastTried = new Date().toISOString();
+  await db.write(); // old chunks are kept, so a temporary failure does not wipe what Pulse knew
+}
+
+export async function deleteKnowledgeSource(id, communityKeys) {
+  const s = getKnowledgeSource(id, communityKeys);
+  if (!s) return false;
+  db.data.knowledge.sources = db.data.knowledge.sources.filter((x) => x.id !== id);
+  await db.write();
+  return true;
+}
+
+// Web and live sources are re-read on their own schedule. A failing one is retried after an hour at most.
+export function dueKnowledge(now = Date.now()) {
+  return db.data.knowledge.sources.filter((s) => {
+    if (s.type === 'text') return false;
+    const last = s.lastTried ? new Date(s.lastTried).getTime() : 0;
+    const every = (s.status === 'error' ? Math.min(s.refreshHours || 24, 1) : (s.refreshHours || 24)) * 3600000;
+    return now - last >= every;
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Pulse: pools                                                        */
+/* ------------------------------------------------------------------ */
+
+const MAX_POOLS = 20, MAX_EVENTS = 500, EVENT_QUIET_HOURS = 12;
+
+export const poolItemsFor = (key) => db.data.pools.items.filter((p) => p.communityKey === key);
+
+export function listPoolItems(communityKeys) {
+  return db.data.pools.items.filter((p) => communityKeys.has(p.communityKey));
+}
+
+export async function addPoolItem(key, item) {
+  if (poolItemsFor(key).length >= MAX_POOLS) throw new Error(`That is the most pools allowed (${MAX_POOLS}). Remove one first.`);
+  const dup = poolItemsFor(key).find((p) => p.kind === item.kind && p.chain === item.chain && String(p.address).toLowerCase() === String(item.address).toLowerCase());
+  if (dup) throw new Error('You are already watching that.');
+  const record = { id: nanoid(10), communityKey: key, status: 'pending', error: null, snapshot: null, history: [], lastEvents: {}, createdAt: new Date().toISOString(), lastTried: null, ...item };
+  db.data.pools.items.push(record);
+  await db.write();
+  return record;
+}
+
+export function getPoolItem(id, communityKeys) {
+  const p = db.data.pools.items.find((x) => x.id === id);
+  return p && communityKeys.has(p.communityKey) ? p : null;
+}
+
+export async function deletePoolItem(id, communityKeys) {
+  if (!getPoolItem(id, communityKeys)) return false;
+  db.data.pools.items = db.data.pools.items.filter((x) => x.id !== id);
+  db.data.pools.events = db.data.pools.events.filter((e) => e.itemId !== id);
+  await db.write();
+  return true;
+}
+
+// Stores a fresh reading, and any changes worth telling a person about. The same kind of
+// change is not announced again for a few hours, so one busy day does not fill the feed.
+export async function savePoolResult(id, { snapshot, error, events = [] }) {
+  const p = db.data.pools.items.find((x) => x.id === id);
+  if (!p) return [];
+  const now = new Date().toISOString();
+  p.lastTried = now;
+  if (error) { p.status = 'error'; p.error = String(error).slice(0, 200); await db.write(); return []; }
+  p.status = 'ok'; p.error = null; p.snapshot = snapshot;
+  if (snapshot.label && !p.label) p.label = snapshot.label;
+  const last = p.history[p.history.length - 1];
+  if (!last || Date.now() - new Date(last.at).getTime() > 45 * 60000) {
+    p.history.push({ at: snapshot.at, tvlUsd: snapshot.tvlUsd ?? null, volume24h: snapshot.volume24h ?? null, apy: snapshot.apy ?? null, count: snapshot.pairs?.length ?? null });
+    if (p.history.length > 100) p.history.shift();
+  }
+  const fresh = [];
+  for (const e of events) {
+    const prev = p.lastEvents[e.type];
+    if (prev && Date.now() - new Date(prev).getTime() < EVENT_QUIET_HOURS * 3600000) continue;
+    p.lastEvents[e.type] = now;
+    const rec = { id: nanoid(10), communityKey: p.communityKey, itemId: p.id, poolLabel: p.label || 'Pool', url: snapshot.url || p.url || '', at: now, ...e };
+    db.data.pools.events.unshift(rec); fresh.push(rec);
+  }
+  if (db.data.pools.events.length > MAX_EVENTS) db.data.pools.events.length = MAX_EVENTS;
+  await db.write();
+  return fresh;
+}
+
+export function listPoolEvents({ communityKeys, since, limit = 100 } = {}) {
+  let out = db.data.pools.events;
+  if (communityKeys) out = out.filter((e) => communityKeys.has(e.communityKey));
+  if (since) out = out.filter((e) => e.at >= since);
+  return out.slice(0, limit);
+}
+
+export function duePools(now = Date.now(), minutes = 20) {
+  return db.data.pools.items.filter((p) => !p.lastTried || now - new Date(p.lastTried).getTime() >= minutes * 60000 * (p.status === 'error' ? 3 : 1));
+}
+
+/* ------------------------------------------------------------------ */
+/* Pulse: X                                                            */
+/* ------------------------------------------------------------------ */
+
+// Reading X costs money per post, so every read is counted against a monthly limit.
+export function xUsage() {
+  const meta = db.data.pulseMeta;
+  const m = monthKey();
+  if (!meta.xUsage || meta.xUsage.month !== m) meta.xUsage = { month: m, reads: 0 };
+  return meta.xUsage;
+}
+export async function addXReads(n) { const u = xUsage(); u.reads = Math.max(0, u.reads + n); await db.write(); }
+export const getXLastRun = () => db.data.pulseMeta.xLastRun || null;
+export async function setXLastRun() { db.data.pulseMeta.xLastRun = new Date().toISOString(); await db.write(); }
+
+export const getXAccount = (key) => db.data.xAccounts[key] || null;
+export async function setXAccount(key, rec) { db.data.xAccounts[key] = rec; await db.write(); }
+export async function deleteXAccount(key) { delete db.data.xAccounts[key]; await db.write(); }
+
+export async function logPost(entry) {
+  db.data.postLog.unshift({ at: new Date().toISOString(), ...entry });
+  if (db.data.postLog.length > 300) db.data.postLog.length = 300;
+  await db.write();
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Pulse: campaign plans                                               */
+/* ------------------------------------------------------------------ */
+export function listCampaigns(communityKeys, { limit = 100 } = {}) {
+  return db.data.campaigns.filter((c) => communityKeys.has(c.communityKey)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+}
+export async function addCampaign(rec) {
+  db.data.campaigns.unshift(rec);
+  if (db.data.campaigns.length > 1000) db.data.campaigns.length = 1000;
+  await db.write(); return rec;
+}
+export async function updateCampaign(id, communityKeys, patch) {
+  const c = db.data.campaigns.find((x) => x.id === id && communityKeys.has(x.communityKey));
+  if (!c) return null;
+  Object.assign(c, patch, { updatedAt: new Date().toISOString() }); await db.write(); return c;
+}
+export async function deleteCampaign(id, communityKeys) {
+  const n = db.data.campaigns.length; db.data.campaigns = db.data.campaigns.filter((x) => !(x.id === id && communityKeys.has(x.communityKey)));
+  if (db.data.campaigns.length === n) return false; await db.write(); return true;
 }

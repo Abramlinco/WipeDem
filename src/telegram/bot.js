@@ -1,9 +1,10 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { config } from '../config.js';
 import { checkMessage, resolveAction, actionLabel } from '../detection/detect.js';
+import { captureMessage, noteReply, pulseDebug } from '../pulse/capture.js';
 import {
   addAlert, addNetworkFlag, getNetworkHistory, getSettings, countStrikes,
-  upsertCommunity, removeCommunity, listCommunities, addMemberEvent, bumpStat
+  upsertCommunity, removeCommunity, listCommunities, addMemberEvent, bumpStat, addCaution
 } from '../db.js';
 import { completeTelegramLogin } from '../auth/telegramLogin.js';
 
@@ -42,18 +43,7 @@ export function startTelegramBot() {
     return null;
   }
 
-    bot = new TelegramBot(config.telegramToken, { 
-    polling: {
-      params: { timeout: 10 },
-      request: {
-        agentOptions: {
-          keepAlive: true,
-          family: 4 // <-- THIS EXPLICITLY PERMANENTLY STABILISES NETWORK DROPS
-        }
-      }
-    } 
-  });
-
+  bot = new TelegramBot(config.telegramToken, { polling: true });
   bot.getMe().then(me => { botUsername = me.username; }).catch(err =>
     console.error('[telegram] could not read bot username, check TELEGRAM_BOT_TOKEN', err.message));
 
@@ -87,16 +77,10 @@ export function startTelegramBot() {
     else upsertCommunity({ platform: 'telegram', id: upd.chat.id, name: upd.chat.title || 'Group' });
   });
 
-   // --- FIXED ASYNC INTEGRATION GATEWAYS APPLIED HERE ---
-  bot.on('message', async (msg) => { await handleMessage(msg); });
-  bot.on('edited_message', async (msg) => { await handleMessage(msg, true); });
-  
-  // Suppress network noise: node-telegram-bot-api auto-reconnects safely
-  bot.on('polling_error', (err) => {
-    if (err.message.includes('ECONNRESET')) return;
-    console.error('[telegram] polling error', err.message);
-  });
-
+  bot.on('message', (msg) => handleMessage(msg));
+  // Scammers post something harmless, then edit it into the scam. Check edits too.
+  bot.on('edited_message', (msg) => handleMessage(msg, true));
+  bot.on('polling_error', (err) => console.error('[telegram] polling error', err.message));
 
   console.log('[telegram] Bot started, polling for messages.');
   return bot;
@@ -129,35 +113,69 @@ async function handleMessage(msg, isEdit = false) {
     if (!isEdit) bumpStat(key, 'scanned');
     const userId = msg.from.id;
 
+    // In groups with topics, every post "replies" to the topic's first
+    // message, which says nothing about the person being answered.
+    const parent = msg.reply_to_message && !msg.reply_to_message.forum_topic_created ? msg.reply_to_message.message_id : '';
+
     const adminIds = await getAdminIds(chatId);
-    if (adminIds.has(userId)) return; // real admins (by ID) can say anything
+    if (adminIds.has(userId)) {
+      // A staff reply is how Pulse knows a question has been answered.
+      if (parent) noteReply('telegram', communityId, parent, true);
+      // Staff are normally not read. PULSE_CAPTURE_STAFF=true is for testing with your own admin account.
+      if (config.pulseCaptureStaff && !isEdit) {
+        captureMessage({
+          settings: await getSettings('telegram', communityId), platform: 'telegram', communityId, communityName: msg.chat.title || 'Group',
+          channelId: communityId, channelName: msg.chat.title || 'Group',
+          userId, username: displayName(msg.from), text: msg.text, messageId: msg.message_id, replyToId: parent
+        });
+      } else {
+        pulseDebug('telegram', 'skipped: sender is an admin or owner (staff are not read)', displayName(msg.from), msg.text);
+      }
+      return; // real admins (by ID) can say anything
+    }
 
-        const settings = await getSettings('telegram', communityId);
-    
-    // --- RESTORED THIS CRITICAL CHECK LINE HERE ---
-    const result = await checkMessage(msg.text, settings.rules);
-    if (!result.flagged) return;
+    const settings = await getSettings('telegram', communityId);
+    const result = checkMessage(msg.text, settings.rules);
+    if (result.flagged) pulseDebug('telegram', `skipped: flagged by the scam rule "${result.ruleLabel}"`, displayName(msg.from), msg.text);
+    if (!result.flagged) {
+      // A clean message. Pulse keeps it if it is an idea, question or concern.
+      if (!isEdit) {
+        if (parent) noteReply('telegram', communityId, parent, false);
+        captureMessage({
+          settings, platform: 'telegram', communityId, communityName: msg.chat.title || 'Group',
+          channelId: communityId, channelName: msg.chat.title || 'Group',
+          userId, username: displayName(msg.from), text: msg.text, messageId: msg.message_id, replyToId: parent
+        });
+      }
+      return;
+    }
 
-    // --- VERIFIED TYPE-SAFE DELETION CORE ---
-    const targetChat = msg.chat.id;
-    const targetMessageId = Number(msg.message_id);
+    // Contain first, review after. Nobody is permanently banned without a human.
+    await bot.deleteMessage(chatId, msg.message_id).catch(() => {});
 
-    await bot.deleteMessage(targetChat, targetMessageId)
-      .then(() => console.log(`[Sentinel Success] Deleted Telegram scam text from user: ${msg.from.id}`))
-      .catch((err) => console.error("[Telegram Deletion API Error] Failure Details:", err.message));
-
+    const history = await getNetworkHistory(userId);
+    const others = history.filter(h => !(h.platform === 'telegram' && h.guildOrChatId === communityId));
+    const knownElsewhere = others.length > 0;
 
     const strikes = (await countStrikes('telegram', communityId, userId, settings.strikeWindowDays)) + 1;
-    const tier = resolveAction(strikes, settings.escalation, result.penalty);
+    // Someone already flagged in another community is treated as a known
+    // scammer here, straight to a ban review, skipping the usual escalation
+    // ladder entirely, whatever strike count they are actually on.
+    const tier = knownElsewhere ? { action: 'flag_for_ban' } : resolveAction(strikes, settings.escalation, result.penalty);
     if (tier.action === 'mute') {
       await bot.restrictChatMember(chatId, userId, {
         can_send_messages: false,
         until_date: Math.floor(Date.now() / 1000) + tier.minutes * 60
       }).catch(() => {});
     }
-
-    const history = await getNetworkHistory(userId);
-    const others = history.filter(h => !(h.platform === 'telegram' && h.guildOrChatId === communityId));
+    if (result.ruleKey === 'suspiciousLinks') {
+      // Always explain the no links policy, whatever else happens to the message.
+      await cautionTelegramUser(chatId, { userId, username: displayName(msg.from) }, settings.linkBlockedMessage).catch(() => {});
+      await addCaution({ platform: 'telegram', communityId, userId: String(userId), username: displayName(msg.from), by: 'auto' });
+    } else if (tier.action === 'caution') {
+      await cautionTelegramUser(chatId, { userId, username: displayName(msg.from) }, settings.cautionMessage).catch(() => {});
+      await addCaution({ platform: 'telegram', communityId, userId: String(userId), username: displayName(msg.from), by: 'auto' });
+    }
 
     await addAlert({
       platform: 'telegram',
@@ -172,8 +190,8 @@ async function handleMessage(msg, isEdit = false) {
       ruleLabel: result.ruleLabel,
       matchedPhrase: result.matchedPhrase,
       strikeCount: strikes,
-      actionTaken: actionLabel(tier),
-      seenElsewhere: others.length > 0,
+      actionTaken: knownElsewhere ? 'flagged for ban review, already known on the network' : actionLabel(tier),
+      seenElsewhere: knownElsewhere,
       networkCount: new Set(others.map(o => `${o.platform}:${o.guildOrChatId}`)).size
     });
     await addNetworkFlag(userId, {
@@ -185,7 +203,6 @@ async function handleMessage(msg, isEdit = false) {
     console.error('[telegram] error handling message', err.message);
   }
 }
-
 
 /* ------------- used by the dashboard ------------- */
 
@@ -250,4 +267,20 @@ export async function telegramMemberCounts() {
     try { out.push({ key: `telegram:${g.id}`, count: await bot.getChatMemberCount(g.id) }); } catch { /* bot removed */ }
   }
   return out;
+}
+
+// Posts an approved reply as a real Telegram reply. Sent as plain text, so
+// nothing in the draft can be read as formatting or a hidden link.
+export async function replyTelegram(chatId, messageId, text) {
+  if (!bot) return false;
+  const opts = messageId ? { reply_to_message_id: Number(messageId), allow_sending_without_reply: true } : {};
+  await bot.sendMessage(chatId, text.slice(0, 3900), opts);
+  return true;
+}
+
+// Posts an approved message in the group. Sent as plain text, so nothing in it can be read as formatting.
+export async function postTelegram(chatId, text) {
+  if (!bot) return false;
+  await bot.sendMessage(chatId, text.slice(0, 3900));
+  return true;
 }

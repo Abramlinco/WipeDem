@@ -8,12 +8,18 @@ export const platforms = {
     ban: tg.banTelegramUser,
     release: tg.releaseTelegramUser,
     caution: (community, user, text) => tg.cautionTelegramUser(community, user, text),
-    admins: tg.getTelegramAdmins
+    admins: tg.getTelegramAdmins,
+    reply: (community, _channel, messageId, text) => tg.replyTelegram(community, messageId, text),
+    post: (community, _channel, text) => tg.postTelegram(community, text),
+    channels: async () => [] // a Telegram post goes to the group itself
   },
   discord: {
     ban: dc.banDiscordUser,
     release: dc.releaseDiscordUser,
     caution: (community, user, text, channelId) => dc.cautionDiscordUser(channelId, user, text),
-    roles: dc.getGuildRoles
+    roles: dc.getGuildRoles,
+    reply: (community, channelId, messageId, text) => dc.replyDiscord(community, channelId, messageId, text),
+    post: (community, channelId, text) => dc.postDiscord(community, channelId, text),
+    channels: async (community) => dc.listDiscordChannels(community)
   }
 };

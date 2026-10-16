@@ -2,3 +2,11 @@ node_modules/
 .env
 data/db.json
 *.log
+
+# Local Sentinel patch files and backups
+.sentinel-*-backup*/
+sentinel-patch-*/
+sentinel-reply-patch/
+sentinel-surgical-patch.js
+*patch*.zip
+*patch*.js

@@ -3,6 +3,7 @@ import { requireLogin } from '../auth/sessions.js';
 import { getAccess } from '../access.js';
 import { platforms } from '../platform.js';
 import { defaultEscalation } from '../db.js';
+import { pulseRouter } from './pulse.js';
 import {
   listAlerts, resolveAlertsForUser, getStats, getSettings, saveSettings, addCaution, listCautions,
   listMemberEvents, getNetworkHistory, summarizeNetwork, searchNetwork, getDailyScanned, getMemberCounts,
@@ -86,6 +87,7 @@ apiRouter.get('/users/:platform/:communityId/:userId', guard, async (req, res) =
   const cautions = await listCautions({ platform, communityId, userId });
   const events = await listMemberEvents({ communityKeys: new Set([key]), userId });
   const network = summarizeNetwork(await getNetworkHistory(userId), platform, communityId);
+  const settings = await getSettings(platform, communityId);
   const latest = alerts[0];
   res.json({
     userId,
@@ -99,6 +101,7 @@ apiRouter.get('/users/:platform/:communityId/:userId', guard, async (req, res) =
     openCount: alerts.filter(a => !a.resolved).length,
     cautionCount: cautions.length,
     lastResolution: alerts.find(a => a.resolved)?.resolution || null,
+    defaultCautionMessage: settings.cautionMessage,
     recent: alerts.slice(0, 5).map(a => ({
       id: a.id, text: a.text, ruleLabel: a.ruleLabel, actionTaken: a.actionTaken,
       channelName: a.channelName, createdAt: a.createdAt, resolution: a.resolution
@@ -110,7 +113,7 @@ apiRouter.get('/users/:platform/:communityId/:userId', guard, async (req, res) =
 apiRouter.post('/users/:platform/:communityId/:userId/action', guard, async (req, res) => {
   const { platform, communityId, userId } = req.params;
   const action = req.body?.action;
-  if (!['ban', 'release', 'caution'].includes(action)) return res.status(400).json({ error: 'Unknown action' });
+  if (!['ban', 'release', 'caution', 'dismiss'].includes(action)) return res.status(400).json({ error: 'Unknown action' });
 
   const key = communityKey(platform, communityId);
   const alerts = await listAlerts({ communityKeys: new Set([key]), userId });
@@ -122,11 +125,14 @@ apiRouter.post('/users/:platform/:communityId/:userId/action', guard, async (req
   if (action === 'release') await impl.release(communityId, userId);
   if (action === 'caution') {
     const settings = await getSettings(platform, communityId);
-    await impl.caution(communityId, { userId, username }, settings.cautionMessage, latest?.channelId);
-    await addCaution({ platform, communityId, userId, username, by: req.session.id.slice(0, 8) });
+    const custom = String(req.body?.message ?? '').trim().slice(0, 400);
+    await impl.caution(communityId, { userId, username }, custom || settings.cautionMessage, latest?.channelId);
+    await addCaution({ platform, communityId, userId, username, by: req.session.id.slice(0, 8), custom: !!custom });
   }
+  // 'dismiss' takes no platform action, for when a flagged message turns out
+  // to be a false positive and the person needs nothing done to them.
 
-  const resolution = { ban: 'banned', release: 'released', caution: 'cautioned' }[action];
+  const resolution = { ban: 'banned', release: 'released', caution: 'cautioned', dismiss: 'dismissed' }[action];
   await resolveAlertsForUser(platform, communityId, userId, resolution);
   res.json({ ok: true, resolution });
 });
@@ -141,7 +147,7 @@ const toInt = (v, min, max, fallback) => {
   const n = Math.round(Number(v));
   return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback;
 };
-const ACTIONS = ['delete', 'mute', 'flag_for_ban'];
+const ACTIONS = ['delete', 'mute', 'flag_for_ban', 'caution'];
 
 apiRouter.get(settingsBase, async (req, res) => {
   res.json(await getSettings(req.params.platform, req.params.communityId));
@@ -208,6 +214,17 @@ edit('post', '/caution-message', (s, { text }) => {
   const t = String(text ?? '').trim().slice(0, 400);
   if (!t) return { error: 'The message cannot be empty' };
   s.cautionMessage = t;
+});
+
+edit('post', '/link-blocked-message', (s, { text }) => {
+  const t = String(text ?? '').trim().slice(0, 400);
+  if (!t) return { error: 'The message cannot be empty' };
+  s.linkBlockedMessage = t;
+});
+
+edit('post', '/link-strict-mode', (s, { enabled }) => {
+  if (!s.rules.suspiciousLinks) return { status: 404, error: 'Suspicious links rule not found' };
+  s.rules.suspiciousLinks.strictMode = !!enabled;
 });
 
 edit('post', '/admin-roles', (s, { roleIds }) => {
@@ -315,6 +332,10 @@ apiRouter.get('/reports/export.csv', async (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="sentinel-report.csv"');
   res.send([head, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n'));
 });
+
+/* ---------- Pulse: community ideas, market trends, playbook ---------- */
+
+apiRouter.use('/pulse', pulseRouter);
 
 /* ---------- shared network ---------- */
 

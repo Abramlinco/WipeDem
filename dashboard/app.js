@@ -56,8 +56,10 @@ async function api(path, { method = 'GET', body } = {}) {
   if (method !== 'GET') { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body ?? {}); }
   const res = await fetch(`/api${path}`, opts);
   if (!res.ok) {
-    const err = new Error((await res.json().catch(() => ({}))).error || `Request failed (${res.status})`);
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body.error || `Request failed (${res.status})`);
     err.status = res.status;
+    err.flags = body.flags;
     throw err;
   }
   return res.json();
@@ -74,20 +76,43 @@ function fail(e) {
 const state = {
   cfg: { discord: false, telegram: false },
   me: null,
-  invites: [], 
-  scope: 'all',
-  filter: 'open',
+  scope: 'all',          // 'all' or a community key like "telegram:-100123"
+  filter: 'open',        // open | done | all
   reportDays: 30,
   profile: null,
-  mobileDrawerOpen: false, // <-- ADD THIS DYNAMIC TOGGLE KEY
   settings: { platform: null, id: null, data: null, extra: null }
 };
 
+/* Real, recognizable icons, not abstract glyphs. Single colour, inherits
+   currentColor, so they follow the active/inactive nav styling for free. */
+const ICONS = {
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9a1 1 0 0 0 1 1H9v-5.5a1.5 1.5 0 0 1 1.5-1.5h3a1.5 1.5 0 0 1 1.5 1.5V20h2.5a1 1 0 0 0 1-1v-9"/></svg>',
+  discord: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9.5c2.5 1.2 5.5 1.2 8 0"/><path d="M9 15.5c2 .7 4 .7 6 0"/><path d="M16.5 6.5C15 6 13.7 5.7 12 5.7S9 6 7.5 6.5C5.8 9 5 12 5.3 15c1.3 1 2.8 1.7 4.4 2.2l.7-1.4"/><path d="M16.5 6.5C18.2 9 19 12 18.7 15c-1.3 1-2.8 1.7-4.4 2.2l-.7-1.4"/><circle cx="9.2" cy="12" r="1"/><circle cx="14.8" cy="12" r="1"/></svg>',
+  telegram: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4 3 11.4l6 2.1M21 4l-3.2 16-8.8-6.5M21 4 9 14.5"/><path d="M9 14.5v5l2.9-3"/></svg>',
+  reports: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11l3 3v13H5z"/><path d="M16 4v3h3"/><path d="M8.5 12v4M12 10v6M15.5 13.5V16"/></svg>',
+  network: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M12 7v5M12 12 6.3 16.5M12 12l5.7 4.5"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9c.2.6.8 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  pulse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 4 12 2.5-6H21"/></svg>',
+  campaigns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M8 14h3M8 18h7"/></svg>',
+  menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+  logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
+  help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="M9.5 9.2a2.7 2.7 0 0 1 5.2.9c0 1.8-2.7 2.3-2.7 4"/><path d="M12 17.4h.01"/></svg>',
+  contrast: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5.5c0 4.4 3 7.6 7 9 4-1.4 7-4.6 7-9V6z"/><path d="m9 12 2 2 4-4"/></svg>',
+  listen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 10.5h2l1.2-2.2 1.6 4 1.2-1.8H16"/></svg>',
+  reply: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10.5 13.5"/><path d="M21 3 14.5 21l-4-7.5L3 9.5z"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-3.6 3.7-5.4 7.5-5.4s6.7 1.8 7.5 5.4"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>'
+};
+// The Sentinel mark: a shield holding a pulse line. Colours come from CSS so it works on dark and light.
+const MARK = '<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path class="sh" d="M16 3 6 7v8c0 6 4.2 10.4 10 12.5C21.800 25.400 26 21 26 15V7z"/><path class="pl" d="M10 16.5H13L15 12L17.600 20L19.400 16.500H22"/></svg>';
+const NAV_GROUP = { discord: 'Communities', pulse: 'Grow', reports: 'Insights', settings: 'Manage' };
 
+const icon = (name) => raw(`<span class="ic" aria-hidden="true">${ICONS[name]}</span>`);
 
 const NAV = [
-  ['home', 'Home', '◆'], ['discord', 'Discord', '◈'], ['telegram', 'Telegram', '✈'],
-  ['reports', 'Reports', '▤'], ['network', 'Network', '◎'], ['settings', 'Settings', '⚙']
+  ['home', 'Home', 'home'], ['discord', 'Discord', 'discord'], ['telegram', 'Telegram', 'telegram'],
+  ['pulse', 'Pulse', 'pulse'], ['campaigns', 'Campaign planner', 'campaigns'], ['reports', 'Reports', 'reports'], ['network', 'Network', 'network'], ['settings', 'Settings', 'settings']
 ];
 
 function route() {
@@ -125,26 +150,42 @@ function render() {
   if (!state.me) return renderLogin();
   const { page } = route();
   $('#app').innerHTML = shell(page).s;
+  window.Theme?.sync?.();
   loadPage(page);
+  window.Guide?.afterRender?.(page);
 }
 
 let loginTimer;
 function renderLogin() {
   clearInterval(loginTimer);
   $('#drawer-root').innerHTML = '';
-  $('#app').innerHTML = html`<div class="login"><div class="box">
-    <div class="brand" style="padding-left:0"><div class="dot"></div><div><b>Sentinel</b><small>Community Protection</small></div></div>
-    <h1>Sign in</h1>
-    <p>Sign in with the account you use to run your community. Sentinel shows only the servers and groups where you are a real admin.</p>
-    ${state.cfg.discord
-      ? html`<a class="btn discord" href="/auth/discord">Continue with Discord</a>`
-      : html`<button class="btn" disabled>Discord sign in is not set up yet</button>`}
-    ${state.cfg.telegram
-      ? html`<button class="btn telegram" data-act="tg-login">Continue with Telegram</button>`
-      : html`<button class="btn" disabled>Telegram bot is not running</button>`}
-    <div id="tg-wait"></div>
-    <p class="note muted">Signing in never gives Sentinel your password. Discord shows you what is shared. Telegram confirms who you are through the bot.</p>
-  </div></div>`.s;
+  $('#app').innerHTML = html`<div class="login">
+    <section class="login-brand">
+      <div class="brand">${raw(MARK)}<div><b>Sentinel</b><small>Community protection</small></div></div>
+      <div class="login-hero">
+        <svg class="bigpulse" viewBox="0 0 480 120" aria-hidden="true"><path class="base" d="M0 60H480"/><path class="beat" pathLength="640" d="M0 60H150L175 60L200 14L238 104L262 60H480"/></svg>
+        <h1>Keep scammers out. Hear what your community is really saying.</h1>
+        <ul class="points">
+          <li><span class="pi">${icon('shield')}</span><div><b>Protection that asks first</b><span>Catches fake admins, scam links and raid bots in Discord and Telegram. Nobody is banned without your decision.</span></div></li>
+          <li><span class="pi">${icon('listen')}</span><div><b>Ideas, questions and concerns</b><span>Turns busy chats into a short list you can act on, next to what is trending in crypto.</span></div></li>
+          <li><span class="pi">${icon('reply')}</span><div><b>Replies you approve</b><span>Drafts answers from your own docs and live data. Nothing is posted until you press send.</span></div></li>
+        </ul>
+      </div>
+      <p class="foot">Built for Discord and Telegram community teams.</p>
+    </section>
+    <section class="login-card"><div class="box">
+      <h2>Sign in</h2>
+      <p>Use the account you run your community with. Sentinel shows only the servers and groups where you are a real admin.</p>
+      ${state.cfg.discord
+        ? html`<a class="btn discord" href="/auth/discord">${icon('discord')}Continue with Discord</a>`
+        : html`<button class="btn" disabled>Discord sign in is not set up yet</button>`}
+      ${state.cfg.telegram
+        ? html`<button class="btn telegram" data-act="tg-login">${icon('telegram')}Continue with Telegram</button>`
+        : html`<button class="btn" disabled>Telegram bot is not running</button>`}
+      <div id="tg-wait"></div>
+      <p class="note muted">Signing in never gives Sentinel your password. Discord shows you what is shared. Telegram confirms who you are through the bot.</p>
+    </div></section>
+  </div>`.s;
 }
 
 async function telegramLogin() {
@@ -166,22 +207,6 @@ async function telegramLogin() {
   }, 2000);
 }
 
-function renderNavLink(id, label, ic, page) {
-  // If this item is currently active, tag it with your project's active CSS class
-  const isActive = page === id ? 'active' : '';
-  const isTarget = id === 'discord' || id === 'telegram';
-  const badgeHtml = isTarget ? html`<span class="badge" data-badge="${id}" hidden></span>` : '';
-  
-  // Custom injection: apply an explicit direct color block if the link is active to verify layout visibility
-  const activeColorStyle = page === id ? 'color: #5865F2; font-weight: bold;' : 'color: #666;';
-  
-  return html`<a data-nav="#/${id}" class="${isActive}" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-decoration: none; font-size: 11px; ${activeColorStyle}">
-    <span class="ic" style="font-size: 20px; margin-bottom: 2px;">${ic}</span>
-    <span>${label}</span>
-    ${badgeHtml}
-  </a>`;
-}
-
 /* =====================================================================
    Shell
 ===================================================================== */
@@ -191,54 +216,48 @@ function shell(page) {
     me.discord && html`<div class="who-chip"><span class="plat discord">DC</span>${me.discord.user.username}</div>`,
     me.telegram && html`<div class="who-chip"><span class="plat telegram">TG</span>${me.telegram.user.username ? `@${me.telegram.user.username}` : me.telegram.user.firstName}</div>`
   ];
-
-  // Filters major quick access targets vs secondary parameters
-  const majorNav = NAV.filter(([id]) => ['home', 'discord', 'telegram'].includes(id));
-  const burgerNav = NAV.filter(([id]) => ['reports', 'network', 'settings'].includes(id));
-  const isDrawerOpen = state.mobileDrawerOpen ? 'open' : '';
-
   return html`<div class="shell">
-    <!-- DESKTOP SIDEBAR RAIL -->
     <aside class="rail">
-      <div class="brand"><div class="dot"></div><div><b>Sentinel</b><small>Community Protection</small></div></div>
+      <div class="brand">${raw(MARK)}<div><b>Sentinel</b><small>Community protection</small></div></div>
       <nav class="nav">
-        ${NAV.map(([id, label, ic]) => renderNavLink(id, label, ic, page))}
-        <button class="btn primary" data-act="smart-add-community" style="margin: 12px 10px; width: calc(100% - 20px); text-align: left; justify-content: flex-start; gap: 8px;">
-          <span class="ic">＋</span> Add Community
-        </button>
+        ${NAV.map(([id, label, ic]) => html`${NAV_GROUP[id] ? html`<div class="navgroup">${NAV_GROUP[id]}</div>` : ''}<a data-nav="#/${id}" class="${page === id ? 'active' : ''}">${icon(ic)}${label}
+          ${(id === 'discord' || id === 'telegram') ? html`<span class="badge" data-badge="${id}" hidden></span>` : ''}
+          ${(id === 'discord' || id === 'telegram') ? html`<button class="navplus" data-act="add-community" data-platform="${id}" title="Add ${label}" aria-label="Add ${label}">${icon('plus')}</button>` : ''}
+        </a>`)}
       </nav>
-      <div class="railfoot">${who}<a href="#/settings/account" data-nav="#/settings/account">Account</a><a data-act="logout" style="cursor:pointer">Log out</a></div>
+      <div class="railfoot">
+        <div class="railtools">
+          <button class="railbtn" data-guide="toggle">${icon('help')}Guide<span class="state" data-guide-state></span></button>
+          <button class="railbtn" data-theme-toggle>${icon('contrast')}<span data-theme-label>Dark mode</span></button>
+        </div>
+        ${who}
+        <a href="#/settings/account" data-nav="#/settings/account">${icon('user')}Account</a>
+        <a data-act="logout" style="cursor:pointer">${icon('logout')}Log out</a>
+      </div>
     </aside>
     <main class="main" id="page"><div class="empty">Loading…</div></main>
   </div>
-  
-    <!-- MOBILE BURGER OVERLAY DRAWER -->
-  <div class="mobile-drawer ${isDrawerOpen}" style="position: fixed; bottom: 65px; right: 16px; left: 16px; background: #fff; box-shadow: 0 -4px 20px rgba(0,0,0,0.15); border-radius: 16px; padding: 16px; z-index: 99;">
-    <div style="font-weight: bold; margin-bottom: 12px; font-size: 12px; text-transform: uppercase; color: #888; letter-spacing: 0.5px;">More Features</div>
-    <nav class="nav" style="display: flex; flex-direction: column; gap: 6px;">
-      ${burgerNav.map(([id, label, ic]) => renderNavLink(id, label, ic, page))}
-      <button class="btn primary" data-act="smart-add-community" style="margin-top: 8px; width: 100%; text-align: left; justify-content: flex-start; gap: 8px;">
-        <span class="ic">＋</span> Add Community
-      </button>
-    </nav>
-  </div>
-
-  <!-- FIXED RESPONSIVE MOBILE TABBAR -->
-  <nav class="tabbar" style="display: flex; justify-content: space-around; align-items: center; background: #fff; border-top: 1px solid #eee; position: fixed; bottom: 0; left: 0; right: 0; height: 60px; z-index: 100; padding-bottom: env(safe-area-inset-bottom);">
-    ${majorNav.map(([id, label, ic]) => renderNavLink(id, label, ic, page))}
-    <a data-act="toggle-mobile-drawer" class="${state.mobileDrawerOpen ? 'active' : ''}" style="cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; color: #666;">
-      <span class="ic" style="font-size: 20px; line-height: 1;">☰</span>
-      Menu
-    </a>
+  <nav class="tabbar" id="tabbar">
+    <div class="moresheet">
+      ${NAV.slice(4).map(([id, label, ic]) => html`<a data-nav="#/${id}" class="${page === id ? 'active' : ''}">${icon(ic)}${label}</a>`)}
+      <div class="sep"></div>
+      <a data-guide="toggle">${icon('help')}Guide<span class="tag" data-guide-state style="margin-left:auto"></span></a>
+      <a data-theme-toggle>${icon('contrast')}<span data-theme-label>Dark mode</span></a>
+      <a data-nav="#/settings/account">${icon('user')}Account</a>
+      <a data-act="logout">${icon('logout')}Log out</a>
+    </div>
+    ${NAV.slice(0, 4).map(([id, label, ic]) => html`<a data-nav="#/${id}" class="${page === id ? 'active' : ''}">${icon(ic)}${label}</a>`)}
+    <a data-act="more" class="${NAV.slice(4).some((n) => n[0] === page) ? 'active' : ''}">${icon('menu')}More</a>
   </nav>`;
 }
-
 
 async function loadPage(page, opts = {}) {
   try {
     const { sub } = route();
     if (page === 'home') await loadHome();
     else if (page === 'discord' || page === 'telegram') await loadPlatform(page);
+    else if (page === 'pulse') await loadPulse(sub);
+    else if (page === 'campaigns') await loadCampaignPlanner();
     else if (page === 'reports') await loadReports();
     else if (page === 'network') await loadNetwork();
     else if (page === 'settings') await loadSettings(sub);
@@ -255,7 +274,34 @@ async function updateBadges() {
   }
 }
 
-const setPage = (h) => { const el = $('#page'); if (el) el.innerHTML = h.s; };
+const PAGE_SUB = {
+  discord: 'Messages Sentinel removed in your Discord servers, waiting for your decision.',
+  telegram: 'Messages Sentinel removed in your Telegram groups, waiting for your decision.',
+  pulse: 'What your community is asking, suggesting and worrying about, and what is trending outside.',
+  reports: 'Scams caught and member growth over time.',
+  network: 'Look up people flagged by other communities.',
+  settings: 'Choose how Sentinel protects, warns and trusts.'
+};
+// Gives each page a one line description under its title, so nobody has to guess what a page is for.
+function decoratePage() {
+  const top = $('#page')?.querySelector?.(':scope > .topbar');
+  if (!top || top.querySelector('.titles')) return;
+  const h1 = top.querySelector(':scope > h1');
+  if (!h1) return;
+  const text = route().page === 'home' ? state.homeSub : PAGE_SUB[route().page];
+  const wrap = document.createElement('div');
+  wrap.className = 'titles';
+  top.insertBefore(wrap, h1);
+  wrap.appendChild(h1);
+  if (text) { const p = document.createElement('p'); p.className = 'pagesub'; p.textContent = text; wrap.appendChild(p); }
+}
+const setPage = (h) => {
+  const el = $('#page');
+  if (!el) return;
+  el.innerHTML = h.s;
+  decoratePage();
+  window.Guide?.afterPage?.();
+};
 
 /* =====================================================================
    Pieces used on several pages
@@ -269,7 +315,7 @@ function statCards(s) {
   </div>`;
 }
 
-const RES_CLASS = { banned: 'bad', released: 'ok', cautioned: 'net' };
+const RES_CLASS = { banned: 'bad', released: 'ok', cautioned: 'net', dismissed: 'info' };
 
 function alertRow(a, withActions) {
   const data = html`data-act="profile" data-platform="${a.platform}" data-community="${a.guildId}" data-user="${a.userId}"`;
@@ -303,20 +349,33 @@ function onboarding(platform) {
 ===================================================================== */
 async function loadHome() {
   const community = state.scope === 'all' ? undefined : state.scope;
-  const [stats, tg, dc] = await Promise.all([
+  const [stats, tg, dc, pulse] = await Promise.all([
     api(`/stats${qs({ community })}`),
     api(`/alerts${qs({ community, platform: 'telegram', resolved: false, limit: 6 })}`),
-    api(`/alerts${qs({ community, platform: 'discord', resolved: false, limit: 6 })}`)
+    api(`/alerts${qs({ community, platform: 'discord', resolved: false, limit: 6 })}`),
+    api(`/pulse/overview${qs({ community, days: 7 })}`).catch(() => null)
   ]);
   const column = (platform, alerts) => html`<div class="panel">
     <h2>${PLAT[platform]} <span><a data-nav="#/${platform}" style="cursor:pointer">Open ${PLAT[platform]} dashboard →</a></span></h2>
     ${alerts.length ? alerts.map((a) => alertRow(a, false))
       : html`<div class="empty">${communitiesOf(platform).length ? 'Nothing waiting. All clear.' : `No ${PLAT[platform]} community connected yet.`}</div>`}
   </div>`;
+  const n = state.me.communities.length, waiting = stats.awaitingReview;
+  state.homeSub = !n ? 'Connect a community to start protecting it.'
+    : `Sentinel is watching ${n} ${n === 1 ? 'community' : 'communities'}. ${waiting ? `${waiting} ${waiting === 1 ? 'message is' : 'messages are'} waiting for your review.` : 'Nothing is waiting for your review.'}`;
   setPage(html`
     <div class="topbar"><h1>Today, at a glance</h1><div class="tools">${scopeSelect(null)}</div></div>
     ${!state.me.communities.length && onboarding(null)}
     ${statCards(stats)}
+    ${pulse ? html`<div class="panel"><h2>Pulse at a glance <span><a data-nav="#/pulse/ideas" style="cursor:pointer">Open Pulse →</a></span></h2>
+      <div class="grid">
+        <div class="card accent"><div class="num">${num(pulse.totals?.ideas)}</div><div class="lbl">Ideas this week</div></div>
+        <div class="card ${pulse.totals?.openQuestions ? 'warn' : 'ok'}"><div class="num">${num(pulse.totals?.openQuestions)}</div><div class="lbl">Unanswered questions</div></div>
+        <div class="card ${pulse.totals?.concerns ? 'bad' : ''}"><div class="num">${num(pulse.totals?.concerns)}</div><div class="lbl">Community concerns</div></div>
+        <div class="card"><div class="num">${num(pulse.totals?.contributors)}</div><div class="lbl">Contributors</div></div>
+      </div>
+      ${pulse.hotTopics?.length ? html`<div class="chips" style="margin-top:12px">${pulse.hotTopics.slice(0, 4).map((t) => html`<span class="chip">${t.topic}</span>`)}</div>` : ''}
+    </div>` : ''}
     <div class="split">${column('telegram', tg)}${column('discord', dc)}</div>`);
 }
 
@@ -337,7 +396,7 @@ async function loadPlatform(platform) {
   setPage(html`
     <div class="topbar"><h1>${PLAT[platform]}</h1><div class="tools">${scopeSelect(platform)}</div></div>
     ${statCards(stats)}
-    <div class="tabs">${tab('open', 'Awaiting review')}${tab('done', 'Handled')}${tab('all', 'Everything')}</div>
+    <div class="tabs filters">${tab('open', 'Awaiting review')}${tab('done', 'Handled')}${tab('all', 'Everything')}</div>
     <div class="panel">
       ${alerts.length ? alerts.map((a) => alertRow(a, true))
         : html`<div class="empty"><b>${state.filter === 'open' ? 'Nothing waiting for review' : 'Nothing here yet'}</b><br>Click any person to see their full history.</div>`}
@@ -349,18 +408,16 @@ async function loadPlatform(platform) {
 ===================================================================== */
 async function openProfile(platform, communityId, userId) {
   try {
-    state.mobileDrawerOpen = false; // <-- ADD THIS LINE TO CLEAR MENU WHEN OPENING USER
     state.profile = await api(`/users/${platform}/${enc(communityId)}/${enc(userId)}`);
     drawProfile();
   } catch (e) { fail(e); }
 }
 
-
-function closeProfile() { state.profile = null; $('#drawer-root').innerHTML = ''; }
+function closeProfile() { state.profile = null; state.modal = null; $('#drawer-root').innerHTML = ''; }
 
 function drawProfile() {
   const p = state.profile;
-  const d = (kind, label) => html`<button class="btn ${kind}" data-act="do" data-do="${kind}" data-platform="${p.platform}" data-community="${p.communityId}" data-user="${p.userId}">${label}</button>`;
+  const d = (kind, label, extra = '') => html`<button class="btn ${kind}" data-act="do" data-do="${kind}" data-platform="${p.platform}" data-community="${p.communityId}" data-user="${p.userId}"${raw(extra)}>${label}</button>`;
   $('#drawer-root').innerHTML = html`<div class="overlay" data-act="close-overlay"><aside class="drawer" role="dialog" aria-label="Person details">
     <button class="x" data-act="close" aria-label="Close">✕</button>
     <h3>${p.username}</h3>
@@ -376,17 +433,66 @@ function drawProfile() {
     <h4>Recent flagged messages</h4>
     ${p.recent.length ? p.recent.map((h) => html`<div class="hist">${h.text}<div class="t">${h.ruleLabel} · ${h.actionTaken} · ${ago(h.createdAt)}${h.resolution ? ` · ${h.resolution}` : ''}</div></div>`)
       : html`<div class="muted">No flagged messages from this person.</div>`}
-    <div class="actions">${d('ban', 'Ban')}${d('release', 'Release')}${d('caution', 'Caution')}</div>
-    <p class="muted" style="margin-top:12px">Release lifts a mute. Caution posts your warning message in the chat and closes the alert.</p>
+
+    <h4>Caution message for this person</h4>
+    <p class="muted" style="margin-top:0">Prefilled with your community's default. Edit it here for something specific to what this person did, it only changes this one message.</p>
+    <textarea id="caution-box" maxlength="400">${p.defaultCautionMessage}</textarea>
+    <div class="actions" style="margin-top:8px">${d('caution', 'Send caution', ' data-usemsg="1"')}</div>
+
+    <h4>Decide</h4>
+    <div class="actions">${d('ban', 'Ban')}${d('release', 'Release')}${d('dismiss', 'Dismiss, no action')}</div>
+    <p class="muted" style="margin-top:12px">Release lifts a mute or ban. Dismiss closes this without contacting ${p.username}, for a false positive.</p>
   </aside></div>`.s;
+}
+
+function openAddCommunity(platform) {
+  state.profile = null;
+  if (platform === 'discord') {
+    if (!state.cfg.discord || !state.cfg.discordInviteUrl) {
+      $('#drawer-root').innerHTML = modalShell('Add Discord', html`<p class="muted">Discord sign in is not set up on this server yet. See the README for <code>DISCORD_CLIENT_ID</code> and <code>DISCORD_CLIENT_SECRET</code>.</p>`).s;
+      return;
+    }
+    const w = window.open(state.cfg.discordInviteUrl, 'sentinel-invite', 'width=480,height=720');
+    $('#drawer-root').innerHTML = modalShell('Add Sentinel to a Discord server', html`
+      <p>A Discord window opened for you to pick the server. If you do not see it, ${w ? 'check for a blocked pop up,' : ''} or use this link:</p>
+      <a class="btn primary" href="${state.cfg.discordInviteUrl}" target="_blank" rel="noopener">Open Discord's server picker</a>
+      <p class="muted" style="margin-top:14px">You need the <b>Manage Server</b> permission on whichever server you choose. Once it is added, come back here and sign in with the same Discord account to see it.</p>
+    `).s;
+    return;
+  }
+  if (!state.cfg.telegram) {
+    $('#drawer-root').innerHTML = modalShell('Add Telegram', html`<p class="muted">The Telegram bot is not running. Add <code>TELEGRAM_BOT_TOKEN</code> to your .env and restart.</p>`).s;
+    return;
+  }
+  const botLink = `https://t.me/${state.cfg.telegramBot}`;
+  $('#drawer-root').innerHTML = modalShell('Add Sentinel to a Telegram group', html`
+    <ol style="padding-left:18px; line-height:1.9; margin:0">
+      <li>Open your group in Telegram and tap its name to open <b>Group info</b>.</li>
+      <li>Tap <b>Add members</b>, search for <b>@${state.cfg.telegramBot}</b>, and add it.</li>
+      <li>Tap <b>Administrators → Add Admin</b>, choose the bot, and turn on <b>Delete Messages</b> and <b>Ban Users</b>.</li>
+      <li>Send any message in the group. That is how Sentinel learns the group exists.</li>
+      <li>Come back here and sign in with Telegram to see it listed.</li>
+    </ol>
+    <a class="btn primary" style="margin-top:14px;display:inline-block" href="${botLink}" target="_blank" rel="noopener">Open @${state.cfg.telegramBot}</a>
+  `).s;
+}
+
+function modalShell(title, body) {
+  return html`<div class="overlay" data-act="close-overlay"><aside class="drawer modal" role="dialog" aria-label="${title}">
+    <button class="x" data-act="close" aria-label="Close">✕</button>
+    <h3>${title}</h3>
+    ${body}
+  </aside></div>`;
 }
 
 async function doAction(el) {
   const { do: action, platform, community, user } = el.dataset;
-  if (action === 'ban' && !confirm('Ban this person from the community?')) return;
+  if (action === 'ban' && !(await askConfirm('Ban this person?', 'They will be banned from the community. You can review and undo this from Discord or Telegram.', 'Ban'))) return;
+  const body = { action };
+  if (action === 'caution' && el.dataset.usemsg) body.message = $('#caution-box')?.value || '';
   el.disabled = true;
   try {
-    const r = await api(`/users/${platform}/${enc(community)}/${enc(user)}/action`, { method: 'POST', body: { action } });
+    const r = await api(`/users/${platform}/${enc(community)}/${enc(user)}/action`, { method: 'POST', body });
     toast(`Done: ${r.resolution}`);
     if (state.profile && state.profile.userId === user) await openProfile(platform, community, user);
     loadPage(route().page, { silent: true });
@@ -414,11 +520,12 @@ let lastReport = null;
 async function loadReports() {
   const community = state.scope === 'all' ? undefined : state.scope;
   const days = state.reportDays;
-  const [m, g] = await Promise.all([
+  const [m, g, pulse] = await Promise.all([
     api(`/reports/misconduct${qs({ days, community })}`),
-    api(`/reports/growth${qs({ days, community })}`)
+    api(`/reports/growth${qs({ days, community })}`),
+    api(`/pulse/overview${qs({ days, community })}`).catch(() => null)
   ]);
-  lastReport = { m, g, days };
+  lastReport = { m, g, pulse, days };
   const maxRule = Math.max(1, ...m.byRule.map((r) => r.count));
   const members = [...g.days].reverse().find((d) => d.members !== null)?.members;
   setPage(html`
@@ -429,6 +536,7 @@ async function loadReports() {
       <button class="btn primary" data-act="copy-report">Copy summary</button>
     </div></div>
 
+    ${pulse ? html`<h4 style="margin-top:0">Pulse · community health</h4><div class="grid"><div class="card accent"><div class="num">${num(pulse.totals?.ideas)}</div><div class="lbl">Ideas</div></div><div class="card"><div class="num">${num(pulse.totals?.openQuestions)}</div><div class="lbl">Unanswered questions</div></div><div class="card ${pulse.concerns ? 'warn' : 'ok'}"><div class="num">${num(pulse.totals?.concerns)}</div><div class="lbl">Concerns</div></div><div class="card"><div class="num">${num(pulse.totals?.contributors)}</div><div class="lbl">Contributors</div></div></div><div class="panel"><h2>Topics being discussed</h2>${pulse.hotTopics?.length ? pulse.hotTopics.slice(0,8).map(t => html`<div class="hrow"><div class="l">${t.topic}</div><span class="muted">${num(t.count)} messages</span></div>`) : html`<div class="muted">No Pulse topics in this period.</div>`}</div>` : html`<div class="panel"><h2>Pulse report</h2><div class="muted">Pulse summary is temporarily unavailable. Security and growth reports are still shown below.</div></div>`}
     <h4 style="margin-top:0">Misconduct</h4>
     <div class="grid">
       <div class="card accent"><div class="num">${num(m.totals.flagged)}</div><div class="lbl">Flagged messages</div></div>
@@ -532,7 +640,10 @@ async function loadSettings(sub) {
   drawSettings();
 }
 
-const PENALTIES = [['escalate', 'Follow the escalation steps'], ['delete', 'Delete the message only'], ['mute', 'Delete and mute'], ['flag_for_ban', 'Flag for ban review']];
+const PENALTIES = [['escalate', 'Follow the escalation steps'], ['delete', 'Delete the message only'], ['mute', 'Delete and mute'], ['caution', 'Delete and send a caution'], ['flag_for_ban', 'Flag for ban review']];
+
+let settingsSection = 'protection';
+const SETTINGS_SECTIONS = [['protection', 'Protection'], ['messages', 'Messages'], ['admins', 'Trusted admins'], ['pulse', 'Pulse']];
 
 function drawSettings() {
   const { platform, id, data, extra } = state.settings;
@@ -558,8 +669,13 @@ function drawSettings() {
     <div class="rulehead"><b>${r.label}</b><div style="display:flex;gap:10px;align-items:center">
       ${key.startsWith('custom_') && html`<button class="btn" data-act="rule-del" data-rule="${key}">Delete rule</button>`}
       <div class="switch ${r.enabled ? 'on' : ''}" data-act="rule-toggle" data-rule="${key}" role="switch"><i></i></div></div></div>
+    ${key === 'suspiciousLinks' && html`<div class="toggle" style="margin-bottom:10px">
+      <div class="switch ${r.strictMode ? 'on' : ''}" data-act="link-strict" role="switch"><i></i></div>
+      <span>${r.strictMode ? 'Strict: no link at all from non admins' : 'Smart: only risky looking links, foreign invites, shorteners, pushed links'}</span>
+    </div>`}
     <div class="chips">${r.keywords.length ? r.keywords.map((k) => html`<span class="chip">${k}<button data-act="kw-del" data-rule="${key}" data-phrase="${k}" aria-label="Remove">✕</button></span>`)
       : html`<span class="muted">No phrases yet.</span>`}</div>
+    ${key === 'suspiciousLinks' && html`<div class="muted" style="margin:-4px 0 10px">${r.strictMode ? 'These phrases are ignored while strict mode is on, since every link is already blocked.' : 'These phrases below are the extra ones checked on top of the built in risky link detection.'}</div>`}
     <div class="addrow"><input type="text" id="kw-${key}" data-enter="kw-add" data-rule="${key}" placeholder="Add a phrase, for example: check ur dm" maxlength="100">
       <button class="btn" data-act="kw-add" data-rule="${key}">Add</button></div>
     <div class="penalty" data-rule="${key}">When caught:
@@ -578,12 +694,8 @@ function drawSettings() {
     <input type="number" min="1" max="40320" value="${e[t]?.minutes ?? 10}" data-change="tier" data-field="minutes" aria-label="Mute minutes" ${e[t]?.action === 'mute' ? '' : 'disabled'}>
   </div>`;
 
-  setPage(html`
-    <div class="topbar"><h1>Settings</h1><div class="tools">
-      <select data-change="settings-community" aria-label="Community">${list.map((c) => html`<option value="${c.id}" ${c.id === id ? 'selected' : ''}>${c.name}</option>`)}</select></div></div>
-    ${tabs}
-    ${trusted}
-    <div class="panel"><h2>Rules <span>Turn on or off, add or remove phrases, choose the penalty</span></h2>
+  const sections = {
+    protection: html`<div class="panel"><h2>Rules <span>Turn on or off, add or remove phrases, choose the penalty</span></h2>
       ${rules}
       <div class="rulecard"><div class="addrow"><input type="text" id="new-rule" data-enter="rule-add" placeholder="New rule name, for example: Spam links" maxlength="40">
         <button class="btn primary" data-act="rule-add">Add rule</button></div></div></div>
@@ -591,10 +703,28 @@ function drawSettings() {
       <div class="tier head"><div>Strikes</div><div>Action</div><div>Mute minutes</div></div>
       ${tier('tier1', 'First step')}${tier('tier2', 'Second step')}${tier('tier3', 'Third step')}
       <div class="pad"><span class="muted">A strike is one flagged message from the same person in this community. Count strikes from the last</span>
-        <input type="number" min="1" max="90" value="${data.strikeWindowDays}" data-change="window" style="width:80px;margin:0 6px"><span class="muted">days. Set a step to 0 strikes to turn it off.</span></div></div>
-    <div class="panel"><h2>Caution message <span>Posted in the chat when you press Caution</span></h2>
-      <div class="pad"><textarea id="caution-text" maxlength="400">${data.cautionMessage}</textarea>
-        <div style="margin-top:8px"><button class="btn primary" data-act="caution-save">Save message</button></div></div></div>`);
+        <input type="number" min="1" max="90" value="${data.strikeWindowDays}" data-change="window" style="width:80px;margin:0 6px"><span class="muted">days. Set a step to 0 strikes to turn it off.</span></div></div>`,
+    messages: html`<div class="split">
+      <div class="panel"><h2>Caution message <span>Posted when you press Caution</span></h2>
+        <div class="pad"><textarea id="caution-text" maxlength="400">${data.cautionMessage}</textarea>
+          <div style="margin-top:8px"><button class="btn primary" data-act="caution-save">Save message</button></div></div></div>
+      <div class="panel"><h2>Link blocked message <span>Posted whenever a link is removed</span></h2>
+        <div class="pad"><textarea id="link-blocked-text" maxlength="400">${data.linkBlockedMessage}</textarea>
+          <div style="margin-top:8px"><button class="btn primary" data-act="link-msg-save">Save message</button></div></div></div>
+    </div>`,
+    admins: trusted,
+    pulse: html`<div class="panel"><h2>Pulse <span>Community ideas, replies and market trends</span></h2>
+      <div class="pad"><div class="muted" style="margin-bottom:12px">Everything about reading your community's ideas and drafting replies is set up on the Pulse page, under Setup: your project brief, knowledge (docs and live data), how drafts are prepared, topic focus, and which communities are read.</div>
+        <button class="btn primary" data-nav="#/pulse/setup">Open Pulse setup</button></div></div>`
+  };
+  const section = sections[settingsSection] ? settingsSection : 'protection';
+
+  setPage(html`
+    <div class="topbar"><h1>Settings</h1><div class="tools">
+      <select data-change="settings-community" aria-label="Community">${list.map((c) => html`<option value="${c.id}" ${c.id === id ? 'selected' : ''}>${c.name}</option>`)}</select></div></div>
+    ${tabs}
+    <div class="subnav">${SETTINGS_SECTIONS.map(([sid, l]) => html`<button class="${section === sid ? 'active' : ''}" data-act="settings-section" data-section="${sid}">${l}</button>`)}</div>
+    ${sections[section]}`);
 }
 
 async function saveSetting(method, path, body, focusId) {
@@ -611,48 +741,14 @@ async function saveSetting(method, path, body, focusId) {
    Events (one place, so nothing is attached inline)
 ===================================================================== */
 const ACTS = {
-  // --- ADDED THIS LINE TO POP THE MOBILE MENU DRAWER OPEN ON CLICK ---
-  'toggle-mobile-drawer': () => { state.mobileDrawerOpen = !state.mobileDrawerOpen; render(); },
-
+  'add-community': (el, e) => { e.stopPropagation(); openAddCommunity(el.dataset.platform); },
   'tg-login': telegramLogin,
   'tg-connect': async () => { await telegramLogin(); },
-  
-  'smart-add-community': async (el) => {
-    el.disabled = true;
-    try {
-      state.mobileDrawerOpen = false; // Gracefully auto-closes open drawer upon interaction
-
-      // 1. Fetch a fresh bot link target list generated dynamically from backend
-      const userData = await api('/me');
-      if (!userData.invites || !userData.invites.length) {
-        // Fallback: If your user payload doesn't contain a broad list, use your direct app id generator link
-        window.open('https://discord.com' + (state.cfg.discordClientId || '') + '&scope=bot%20applications.commands&permissions=8', '_blank', 'width=500,height=700');
-        el.disabled = false;
-        return;
-      }
-      
-      // 2. Trigger the official authorization path in a targeted separate tab/window
-      const popup = window.open(userData.invites[0].url, 'Invite Sentinel Bot', 'width=500,height=700,top=100,left=100');
-      
-      // 3. Keep tracking if window is active. Auto-reload dashboard variables as soon as they authorize!
-      const monitor = setInterval(async () => {
-        if (popup.closed) {
-          clearInterval(monitor);
-          toast("Syncing new community channels...");
-          state.me = await api('/me'); // Pull clean database mapping configurations
-          render();
-        }
-      }, 1000);
-    } catch (err) {
-      toast("Could not generate setup link", true);
-    }
-    el.disabled = false;
-  },
-  
   logout: async () => { await fetch('/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); state.me = null; closeProfile(); render(); },
   profile: (el) => openProfile(el.dataset.platform, el.dataset.community, el.dataset.user),
   do: doAction,
   close: closeProfile,
+  more: () => $('#tabbar')?.classList.toggle('open'),
   'close-overlay': (el, e) => { if (e.target === el) closeProfile(); },
   filter: (el) => { state.filter = el.dataset.filter; render(); },
   'copy-report': async () => { try { await navigator.clipboard.writeText(reportSummary()); toast('Summary copied'); } catch { toast('Could not copy. Select and copy manually.', true); } },
@@ -663,13 +759,16 @@ const ACTS = {
   'kw-del': (el) => saveSetting('DELETE', '/keywords', { ruleKey: el.dataset.rule, phrase: el.dataset.phrase }),
   'rule-toggle': (el) => saveSetting('POST', '/rule-toggle', { ruleKey: el.dataset.rule, enabled: !el.classList.contains('on') }),
   'rule-add': () => { const v = $('#new-rule').value.trim(); if (v) saveSetting('POST', '/rules', { label: v }); },
-  'rule-del': (el) => { if (confirm('Delete this rule and its phrases?')) saveSetting('DELETE', `/rules/${enc(el.dataset.rule)}`); },
+  'rule-del': async (el) => { if (await askConfirm('Delete this rule?', 'The rule and all its phrases will be removed.', 'Delete')) saveSetting('DELETE', `/rules/${enc(el.dataset.rule)}`); },
+  'settings-section': (el) => { settingsSection = el.dataset.section; drawSettings(); },
   'admin-role': (el) => {
     const ids = new Set(state.settings.data.adminRoleIds);
     ids.has(el.dataset.role) ? ids.delete(el.dataset.role) : ids.add(el.dataset.role);
     saveSetting('POST', '/admin-roles', { roleIds: [...ids] });
   },
-  'caution-save': () => saveSetting('POST', '/caution-message', { text: $('#caution-text').value })
+  'caution-save': () => saveSetting('POST', '/caution-message', { text: $('#caution-text').value }),
+  'link-msg-save': () => saveSetting('POST', '/link-blocked-message', { text: $('#link-blocked-text').value }),
+  'link-strict': (el) => saveSetting('POST', '/link-strict-mode', { enabled: !el.classList.contains('on') })
 };
 
 const CHANGES = {
@@ -694,16 +793,10 @@ const CHANGES = {
 };
 
 document.addEventListener('click', (e) => {
-  const nav = e.target.closest('[data-nav]');
-  if (nav) { 
-    closeProfile(); 
-    state.mobileDrawerOpen = false; // <-- ADD THIS LINE TO AUTO-CLOSE DRAWER
-    location.hash = nav.dataset.nav; 
-    return; 
-  }
-
   const el = e.target.closest('[data-act]');
-  if (el && ACTS[el.dataset.act]) ACTS[el.dataset.act](el, e);
+  if (el && ACTS[el.dataset.act]) { ACTS[el.dataset.act](el, e); return; }
+  const nav = e.target.closest('[data-nav]');
+  if (nav) { closeProfile(); $('#tabbar')?.classList.remove('open'); location.hash = nav.dataset.nav; }
 });
 document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-change]');

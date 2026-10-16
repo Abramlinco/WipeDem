@@ -12,8 +12,44 @@ export const config = {
   discordToken: process.env.DISCORD_BOT_TOKEN || '',
   discordClientId: process.env.DISCORD_CLIENT_ID || '',
   discordClientSecret: process.env.DISCORD_CLIENT_SECRET || '',
-  telegramToken: process.env.TELEGRAM_BOT_TOKEN || ''
+  telegramToken: process.env.TELEGRAM_BOT_TOKEN || '',
+  // Pulse: community ideas and market trends
+  pulseEnabled: process.env.PULSE_ENABLED !== 'false',
+  pulseRefreshMinutes: Math.max(10, Number(process.env.PULSE_REFRESH_MINUTES) || 30),
+  pulseRetentionDays: Math.min(Math.max(Number(process.env.PULSE_RETENTION_DAYS) || 30, 1), 90),
+  xBearerToken: process.env.X_BEARER_TOKEN || '',
+  xClientId: process.env.X_CLIENT_ID || '',
+  xClientSecret: process.env.X_CLIENT_SECRET || '',
+  xOAuthRedirectUri: process.env.X_OAUTH_REDIRECT_URI || `${(process.env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/+$/, '')}/auth/x/callback`,
+  // Reply drafting. See src/pulse/ai/provider.js.
+  anthropicKey: process.env.ANTHROPIC_API_KEY || '',
+  anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
+  aiBaseUrl: process.env.AI_BASE_URL || '',
+  aiKey: process.env.AI_API_KEY || '',
+  aiModel: process.env.AI_MODEL || '',
+  // Pulse testing aids. PULSE_DEBUG prints why each message was kept or skipped.
+  // PULSE_CAPTURE_STAFF lets Pulse read admins too, so you can test with your own account.
+  pulseDebug: process.env.PULSE_DEBUG === 'true',
+  pulseCaptureStaff: process.env.PULSE_CAPTURE_STAFF === 'true',
+  // Pools, X and posting
+  secretKey: process.env.SENTINEL_SECRET || '',
+  xMonthlyBudgetUsd: process.env.X_MONTHLY_BUDGET_USD ? Math.max(0, Number(process.env.X_MONTHLY_BUDGET_USD) || 0) : 10,
+  xRefreshHours: Math.min(Math.max(Number(process.env.X_REFRESH_HOURS) || 12, 1), 72),
+  xDefaultFeeds: process.env.X_DEFAULT_FEEDS !== 'false',
+  poolRefreshMinutes: Math.max(10, Number(process.env.POOL_REFRESH_MINUTES) || 20),
+  draftsPerHour: Math.min(Math.max(Number(process.env.DRAFTS_PER_HOUR) || 60, 5), 1000)
 };
+// Which engine drafts replies. AI_PROVIDER can force one (none, openai, anthropic),
+// otherwise the first one that has a key wins, and with no keys it is "none".
+config.aiProvider = (() => {
+  const want = (process.env.AI_PROVIDER || '').toLowerCase();
+  if (want === 'none') return 'none';
+  if (want === 'anthropic') return config.anthropicKey ? 'anthropic' : 'none';
+  if (want === 'openai') return config.aiBaseUrl && config.aiModel ? 'openai' : 'none';
+  if (config.anthropicKey) return 'anthropic';
+  if (config.aiBaseUrl && config.aiModel) return 'openai';
+  return 'none';
+})();
 
 export const discordLoginEnabled = () =>
   !!(config.discordClientId && config.discordClientSecret);

@@ -4,6 +4,7 @@ import { config, discordLoginEnabled } from '../config.js';
 import { parseCookies, setCookie, clearCookie, loginAs, logout } from './sessions.js';
 import { newLoginCode, takeConfirmedLogin, isPending } from './telegramLogin.js';
 import { getBotUsername } from '../telegram/bot.js';
+import { discordGenericInviteUrl } from '../discord/bot.js';
 
 export const authRouter = Router();
 
@@ -15,6 +16,7 @@ const page = (title, body) =>
 authRouter.get('/config', (req, res) => {
   res.json({
     discord: discordLoginEnabled(),
+    discordInviteUrl: discordLoginEnabled() ? discordGenericInviteUrl() : null,
     telegram: !!getBotUsername(),
     telegramBot: getBotUsername() || null
   });

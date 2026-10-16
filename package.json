@@ -1,6 +1,6 @@
 {
   "name": "sentinel-bot",
-  "version": "0.2.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "Anti impersonation and scam detection for Web3 communities on Telegram and Discord, with a shared cross project ban network and a web dashboard.",

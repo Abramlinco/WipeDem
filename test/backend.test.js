@@ -11,8 +11,9 @@ const { createApp } = await import('../src/server.js');
 const { setAccessProvider } = await import('../src/access.js');
 const { platforms } = await import('../src/platform.js');
 const db = await import('../src/db.js');
+const { defaultRuleSet } = db;
 const { loginAs } = await import('../src/auth/sessions.js');
-const { checkMessage, resolveAction } = await import('../src/detection/detect.js');
+const { checkMessage, resolveAction, newAccountWithLink } = await import('../src/detection/detect.js');
 
 let server, base, cookie;
 const calls = [];
@@ -164,4 +165,81 @@ test('many things happening at the same moment are never lost', async () => {
   assert.equal((await db.listMemberEvents({})).filter(e => e.userId?.startsWith('j')).length, 60);
   const onDisk = JSON.parse(fs.readFileSync(process.env.SENTINEL_DB_FILE, 'utf8'));
   assert.equal(onDisk.alerts.length, before + 60);
+});
+
+test('detection: foreign Discord invite links, raid bot style redirects', () => {
+  const rules = {
+    suspiciousLinks: { label: 'Suspicious links', enabled: true, keywords: ['bit.ly'], penalty: { mode: 'delete' } }
+  };
+  const scam = checkMessage('Kindly continue this conversation in the appropriate space here. >http://discordapp.com/invite/T9NVFUeYz>', rules);
+  assert.equal(scam.flagged, true);
+  assert.equal(scam.ruleKey, 'suspiciousLinks');
+  assert.match(scam.matchedPhrase, /different Discord server/);
+
+  // The server's own invite is never flagged.
+  const own = checkMessage('join our other channel here: discord.gg/abc123', rules, new Set(['abc123']));
+  assert.equal(own.flagged, false);
+
+  // A known shortener still works alongside the new invite check.
+  assert.equal(checkMessage('claim here bit.ly/xyz', rules).flagged, true);
+
+  // Ordinary conversation with no link is untouched.
+  assert.equal(checkMessage('thanks for the help earlier', rules).flagged, false);
+});
+
+test('detection: brand new accounts posting links, even with no keyword match', () => {
+  assert.equal(newAccountWithLink('check this out http://totally-new-scam-site.example', 0.5), true);
+  assert.equal(newAccountWithLink('check this out http://totally-new-scam-site.example', 40), false);
+  assert.equal(newAccountWithLink('no link here at all', 0.5), false);
+  assert.equal(newAccountWithLink('an invite discord.gg/xyz', 1), true);
+  assert.equal(newAccountWithLink('a link', null), false);
+});
+
+test('detection: strict mode, the default, blocks every link from a non admin', () => {
+  const rules = defaultRuleSet();
+  assert.equal(rules.suspiciousLinks.strictMode, true);
+  const r = checkMessage('send me this link https://alt.borderlink.co.jp/how_to_apply/detail/id=154', rules);
+  assert.equal(r.flagged, true);
+  assert.equal(r.ruleKey, 'suspiciousLinks');
+  // Strict mode means even an ordinary, unremarkable link is not allowed.
+  assert.equal(checkMessage('here is the article I was reading https://example.com/post', rules).flagged, true);
+  // No link at all, nothing to catch, regardless of mode.
+  assert.equal(checkMessage('send me this link', rules).flagged, false);
+});
+
+test('detection: smart mode, switched on by turning strict mode off, only catches risky links', () => {
+  const rules = defaultRuleSet();
+  rules.suspiciousLinks.strictMode = false;
+  // The push phrase pattern still works.
+  const r = checkMessage('send me this link https://alt.borderlink.co.jp/how_to_apply/detail/id=154', rules);
+  assert.equal(r.flagged, true);
+  // An ordinary link with no push phrase and no other red flag stays untouched.
+  assert.equal(checkMessage('here is the article I was reading https://example.com/post', rules).flagged, false);
+  // A known shortener is still caught either way.
+  assert.equal(checkMessage('claim here bit.ly/xyz', rules).flagged, true);
+});
+
+test('settings: link blocked message and strict mode toggle', async () => {
+  const B = '/api/settings/telegram/-100';
+  let s = await (await api(`${B}/link-blocked-message`, { method: 'POST', body: { text: 'No links, open a ticket instead.' } })).json();
+  assert.equal(s.linkBlockedMessage, 'No links, open a ticket instead.');
+  s = await (await api(`${B}/link-strict-mode`, { method: 'POST', body: { enabled: false } })).json();
+  assert.equal(s.rules.suspiciousLinks.strictMode, false);
+  s = await (await api(`${B}/link-strict-mode`, { method: 'POST', body: { enabled: true } })).json();
+  assert.equal(s.rules.suspiciousLinks.strictMode, true);
+  assert.equal((await api(`${B}/link-blocked-message`, { method: 'POST', body: { text: '' } })).status, 400);
+});
+
+test('a user already flagged in another community is sent straight to ban review here', async () => {
+  await db.addNetworkFlag('999', { platform: 'telegram', guildOrChatId: '-500', guildOrChatName: 'Some Other Server', username: 'knownbad', reason: 'Suspicious links' });
+  const key = 'telegram:-100';
+  await db.addAlert({
+    platform: 'telegram', guildId: '-100', guildName: 'Mine', channelId: '-100', channelName: 'Mine',
+    userId: '999', username: 'knownbad', text: 'http://evil.example', ruleKey: 'suspiciousLinks',
+    ruleLabel: 'Suspicious links', actionTaken: 'flagged for ban review, already known on the network',
+    seenElsewhere: true, networkCount: 1
+  });
+  const p = await (await api('/api/users/telegram/-100/999')).json();
+  assert.equal(p.network.communities, 1);
+  assert.equal(p.recent[0].actionTaken, 'flagged for ban review, already known on the network');
 });

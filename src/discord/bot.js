@@ -1,9 +1,10 @@
 import { Client, GatewayIntentBits, PermissionsBitField } from 'discord.js';
 import { config } from '../config.js';
-import { checkMessage, resolveAction, actionLabel } from '../detection/detect.js';
+import { checkMessage, resolveAction, actionLabel, newAccountWithLink } from '../detection/detect.js';
+import { captureMessage, noteReply, pulseDebug } from '../pulse/capture.js';
 import {
   addAlert, addNetworkFlag, getNetworkHistory, getSettings, countStrikes,
-  upsertCommunity, removeCommunity, addMemberEvent, bumpStat
+  upsertCommunity, removeCommunity, addMemberEvent, bumpStat, addCaution
 } from '../db.js';
 
 let client = null;
@@ -38,7 +39,7 @@ export function startDiscordBot() {
 
   const register = (g) => upsertCommunity({ platform: 'discord', id: g.id, name: g.name });
 
-  client.once('clientready', () => {
+  client.once('ready', () => {
     console.log(`[discord] Logged in as ${client.user.tag}`);
     client.guilds.cache.forEach(register);
   });
@@ -69,140 +70,141 @@ export function startDiscordBot() {
   return client;
 }
 
+const inviteCache = new Map(); // guildId -> { at, codes }
+async function ownInviteCodes(guild) {
+  const c = inviteCache.get(guild.id);
+  if (c && Date.now() - c.at < 300000) return c.codes;
+  let codes = new Set();
+  try {
+    const invites = await guild.invites.fetch();
+    codes = new Set(invites.map((i) => i.code.toLowerCase()));
+    if (guild.vanityURLCode) codes.add(guild.vanityURLCode.toLowerCase());
+  } catch {
+    // The bot may not have Manage Server, in which case we simply cannot
+    // tell the server's own invite apart from a foreign one, so every
+    // Discord invite link gets flagged for a human to glance at.
+  }
+  inviteCache.set(guild.id, { at: Date.now(), codes });
+  return codes;
+}
+
 async function handleMessage(message, isEdit = false) {
   try {
-    // Instantly filter out bot webhooks or system text structures
     if (!message.guild || message.author?.bot) return;
+    const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
+    if (!member) return;
 
     const guildId = message.guild.id;
     const key = `discord:${guildId}`;
-    if (!isEdit) bumpStat(key, 'scanned'); //
+    if (!isEdit) bumpStat(key, 'scanned');
 
-    const settings = await getSettings('discord', guildId); //
-    
-    // =========================================================================
-    // STEP 1: IMPACT SCANNER (Context Evaluation)
-    // Runs BEFORE slow API profile lookups to outrun the user-bot's 50ms script
-    // =========================================================================
-    const result = await checkMessage(message.content, message, settings.rules); //
-    
-    // Catch automated mass notification exploits (@everyone / @here)
-    const isMassPingViolation = message.mentionEveryone || message.content.includes('@everyone') || message.content.includes('@here');
-    
-    // If the message is completely clean and carries no threat tokens, let it pass safely
-    if ((!result || !result.flagged) && !isMassPingViolation) return;
-
-    // =========================================================================
-    // STEP 2: THE CONJUNCTION IDENTITY GATE (Staff Validation Matrix)
-    // The strict zero-trust gate. All conditions must align.
-    // =========================================================================
-    const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null); //
-    let isGenuineAuthorizedStaff = false;
-
-    if (member) {
-      // 🕵️‍♂️ INDICATOR A: Native System Privileges (Live API Check)
-      // Checks if they are the real server owner or possess real native management bits
-      const hasNativeAuthority = member.permissions.has(PermissionsBitField.Flags.Administrator) || 
-                                 member.permissions.has(PermissionsBitField.Flags.ManageGuild) || 
-                                 member.permissions.has(PermissionsBitField.Flags.BanMembers) ||
-                                 member.id === message.guild.ownerId; //
-
-      // 🕵️‍♂️ INDICATOR B: Exact Staff Role Verification
-      // Verifies if they possess your designated high-tier community roles (Moderator, Validator, Team, CEO)
-      const hasStaffRole = member.roles.cache.some(role => {
-        const name = role.name.toLowerCase();
-        return name.includes('moderator') || 
-               name.includes('validator') || 
-               name.includes('team') || 
-               name.includes('admin') || 
-               (settings?.adminRoleIds?.length && settings.adminRoleIds.includes(role.id)); //
-      });
-
-      // 🕵️‍♂️ INDICATOR C: Cross-Verified Staff Identity Data Check
-      // Matches the immutable numeric account ID against your secure db.json array
-      const authorId = message.author.id;
-      const isIdentityCrossVerified = checkUserVerifiedID(authorId);
-
-      // 🚨 STRATEGIC SECURITY ENFORCEMENT:
-      // To post links or admin mentions, the user MUST have native authority or a staff role,
-      // AND their unique numeric ID must be cross-verified inside your secure staff database.
-      // If a hijacked 9-year-old account or a sleeper account copies your name, it WILL fail 
-      // the verification gate and trigger immediate suppression.
-      if ((hasNativeAuthority || hasStaffRole) && isIdentityCrossVerified) {
-        isGenuineAuthorizedStaff = true;
+    const settings = await getSettings('discord', guildId);
+    const replyToId = message.reference?.messageId || '';
+    if (isRealAdmin(member, settings)) {
+      // A staff reply is how Pulse knows a question has been answered.
+      if (replyToId) noteReply('discord', guildId, replyToId, true);
+      // Staff are normally not read. PULSE_CAPTURE_STAFF=true is for testing with your own admin account.
+      if (config.pulseCaptureStaff && !isEdit && message.channel.permissionsFor?.(message.guild.roles.everyone)?.has(PermissionsBitField.Flags.ViewChannel)) {
+        captureMessage({
+          settings, platform: 'discord', communityId: guildId, communityName: message.guild.name,
+          channelId: message.channel.id, channelName: message.channel.name,
+          userId: message.author.id, username: message.author.username,
+          text: message.content, messageId: message.id, replyToId
+        });
+      } else {
+        pulseDebug('discord', 'skipped: sender is an admin or owner (staff are not read)', message.author.username, message.content);
       }
+      return;
     }
 
-    // =========================================================================
-    // STEP 3: SYSTEMIC RADICAL INTERCEPTION
-    // Failed the conjunction gate = Threat Entity. Erase it in less than 20ms.
-    // =========================================================================
-    if (!isGenuineAuthorizedStaff) {
-      let targetMessage = message; //
-      if (message.partial) {
-        try { targetMessage = await message.fetch(); } catch { /* fail safe on cache drop */ } //
+    let result = checkMessage(message.content, settings.rules, await ownInviteCodes(message.guild));
+
+    // A link posted by a brand new account is treated as suspicious on its
+    // own, even with no matching rule, the same signal dedicated Discord
+    // security bots use. settings.rules.suspiciousLinks carries the penalty
+    // to use, so this still respects whatever this community configured.
+    if (!result.flagged && settings.rules.suspiciousLinks?.enabled) {
+      const accountAgeDays = (Date.now() - member.user.createdTimestamp) / 86400000;
+      if (newAccountWithLink(message.content, accountAgeDays)) {
+        result = {
+          flagged: true, ruleKey: 'suspiciousLinks', ruleLabel: 'Suspicious links',
+          matchedPhrase: `posted a link within ${Math.round(accountAgeDays)} day(s) of the account existing`,
+          penalty: settings.rules.suspiciousLinks.penalty
+        };
       }
-
-      // Radical Strike: Instantly delete it before the user-bot's script can self-delete
-      if (targetMessage.deletable) {
-        await targetMessage.delete() //
-          .then(() => console.log(`[Sentinel Success] Radical Threat Interception: Purged scam content in Quicksilver from: ${targetMessage.author.id}`))
-          .catch((err) => console.error("[Discord Deletion API Error] Failure Details:", err.message));
-      }
-
-      // =========================================================================
-      // STEP 4: INFRACTION WINDOW ACCUMULATOR & 48-HOUR TIMEOUT
-      // Tracks strategy shifts. 3 unique attempts = Immediate 48-Hour Suspension.
-      // =========================================================================
-      const currentInfractionsCount = (await countStrikes('discord', guildId, message.author.id, settings.strikeWindowDays)) + 1; //
-      let tier = resolveAction(currentInfractionsCount, settings.escalation, result?.penalty); //
-      let monitoringLabel = result?.ruleLabel || '🛑 Unauthorized Support-Link/Raid Mention Shield Active';
-
-      // 🛑 PERSISTENCE OVERWRITE: Drop the absolute hammer on the 3rd attempt
-      if (currentInfractionsCount >= 3) {
-        tier = { action: 'mute', minutes: 2880 }; // 48 Hours = 2880 minutes
-        monitoringLabel = '🛑 Automated 48-Hour Suspension (Persistent Automated Scammer Loop Neutralized)';
-      }
-
-      // Restrict API communication privileges natively
-      if (tier.action === 'mute' && member) {
-        await member.timeout(tier.minutes * 60 * 1000, `Sentinel Threat Control: ${monitoringLabel}`).catch(() => {}); //
-      }
-
-      // Write data blocks straight into db.json for the web application dashboard grids
-      const history = await getNetworkHistory(message.author.id); //
-      const others = history.filter(h => !(h.platform === 'discord' && h.guildOrChatId === guildId)); //
-
-      await addAlert({
-        platform: 'discord', //
-        guildId, //
-        guildName: message.guild.name, //
-        channelId: message.channel.id, //
-        channelName: message.channel.name || 'channel', //
-        userId: message.author.id, //
-        username: message.author.username, //
-        text: message.content, //
-        ruleKey: result?.ruleKey || 'custom_scam_links', //
-        ruleLabel: monitoringLabel,
-        matchedPhrase: result?.matchedPhrase || '@everyone tag', //
-        strikeCount: currentInfractionsCount, //
-        actionTaken: currentInfractionsCount >= 3 ? 'Suspended for 48 hours' : actionLabel(tier), //
-        seenElsewhere: others.length > 0, //
-        networkCount: new Set(others.map(o => `${o.platform}:${o.guildOrChatId}`)).size //
-      });
-
-      await addNetworkFlag(message.author.id, {
-        platform: 'discord', guildOrChatId: guildId, guildOrChatName: message.guild.name, //
-        username: message.author.username, reason: monitoringLabel //
-      });
-      
-      bumpStat(key, 'flagged'); //
     }
+    if (!result.flagged) {
+      // A clean message. Pulse keeps it if it is an idea, question or concern.
+      // Edits are skipped (the original was already read), and so are channels
+      // that regular members cannot see, such as a private staff channel.
+      if (!isEdit) {
+        if (replyToId) noteReply('discord', guildId, replyToId, false);
+        const everyoneSees = message.channel.permissionsFor?.(message.guild.roles.everyone)
+          ?.has(PermissionsBitField.Flags.ViewChannel);
+        if (!everyoneSees) pulseDebug('discord', 'skipped: channel is not visible to @everyone', message.author.username, message.content);
+        if (everyoneSees) {
+          captureMessage({
+            settings, platform: 'discord', communityId: guildId, communityName: message.guild.name,
+            channelId: message.channel.id, channelName: message.channel.name,
+            userId: message.author.id, username: message.author.username,
+            text: message.content, messageId: message.id, replyToId
+          });
+        }
+      }
+      return;
+    }
+
+    pulseDebug('discord', `skipped: flagged by the scam rule "${result.ruleLabel}"`, message.author.username, message.content);
+    // Contain first, review after. Nobody is permanently banned without a human.
+    await message.delete().catch(() => {});
+
+    const history = await getNetworkHistory(message.author.id);
+    const others = history.filter(h => !(h.platform === 'discord' && h.guildOrChatId === guildId));
+    const knownElsewhere = others.length > 0;
+
+    const strikes = (await countStrikes('discord', guildId, message.author.id, settings.strikeWindowDays)) + 1;
+    // Someone already flagged in another community is treated as a known
+    // scammer here, straight to a ban review, skipping the usual escalation
+    // ladder entirely, whatever strike count they are actually on.
+    const tier = knownElsewhere ? { action: 'flag_for_ban' } : resolveAction(strikes, settings.escalation, result.penalty);
+    if (tier.action === 'mute') {
+      await member.timeout(tier.minutes * 60 * 1000, `Sentinel: ${result.ruleLabel}`).catch(() => {});
+    }
+    if (result.ruleKey === 'suspiciousLinks') {
+      // Always explain the no links policy, whatever else happens to the message.
+      await cautionDiscordUser(message.channel.id, { userId: message.author.id }, settings.linkBlockedMessage).catch(() => {});
+      await addCaution({ platform: 'discord', communityId: guildId, userId: message.author.id, username: message.author.username, by: 'auto' });
+    } else if (tier.action === 'caution') {
+      await cautionDiscordUser(message.channel.id, { userId: message.author.id }, settings.cautionMessage).catch(() => {});
+      await addCaution({ platform: 'discord', communityId: guildId, userId: message.author.id, username: message.author.username, by: 'auto' });
+    }
+
+    await addAlert({
+      platform: 'discord',
+      guildId,
+      guildName: message.guild.name,
+      channelId: message.channel.id,
+      channelName: message.channel.name || 'channel',
+      userId: message.author.id,
+      username: message.author.username,
+      text: message.content,
+      ruleKey: result.ruleKey,
+      ruleLabel: result.ruleLabel,
+      matchedPhrase: result.matchedPhrase,
+      strikeCount: strikes,
+      actionTaken: knownElsewhere ? 'flagged for ban review, already known on the network' : actionLabel(tier),
+      seenElsewhere: knownElsewhere,
+      networkCount: new Set(others.map(o => `${o.platform}:${o.guildOrChatId}`)).size
+    });
+    await addNetworkFlag(message.author.id, {
+      platform: 'discord', guildOrChatId: guildId, guildOrChatName: message.guild.name,
+      username: message.author.username, reason: result.ruleLabel
+    });
+    bumpStat(key, 'flagged');
   } catch (err) {
-    console.error('[discord] critical engine handling error:', err.message);
+    console.error('[discord] error handling message', err.message);
   }
 }
-
 
 /* ------------- used by the dashboard ------------- */
 
@@ -237,12 +239,30 @@ export function discordInviteUrl(guildId) {
     PermissionsBitField.Flags.ReadMessageHistory,
     PermissionsBitField.Flags.ManageMessages,
     PermissionsBitField.Flags.ModerateMembers,
-    PermissionsBitField.Flags.BanMembers
+    PermissionsBitField.Flags.BanMembers,
+    PermissionsBitField.Flags.ManageGuild
   ]).bitfield.toString();
   const p = new URLSearchParams({
     client_id: config.discordClientId, scope: 'bot', permissions: perms,
     guild_id: guildId, disable_guild_select: 'true'
   });
+  return `https://discord.com/oauth2/authorize?${p}`;
+}
+
+// No server preselected, so Discord shows the person its own picker listing
+// every server where they can add a bot. Used for the first time "+" button,
+// before we know which server they mean to protect.
+export function discordGenericInviteUrl() {
+  const perms = new PermissionsBitField([
+    PermissionsBitField.Flags.ViewChannel,
+    PermissionsBitField.Flags.SendMessages,
+    PermissionsBitField.Flags.ReadMessageHistory,
+    PermissionsBitField.Flags.ManageMessages,
+    PermissionsBitField.Flags.ModerateMembers,
+    PermissionsBitField.Flags.BanMembers,
+    PermissionsBitField.Flags.ManageGuild
+  ]).bitfield.toString();
+  const p = new URLSearchParams({ client_id: config.discordClientId, scope: 'bot', permissions: perms });
   return `https://discord.com/oauth2/authorize?${p}`;
 }
 
@@ -266,16 +286,55 @@ export async function releaseDiscordUser(guildId, userId) {
   const guild = client?.guilds.cache.get(guildId);
   if (!guild) return false;
   const member = await guild.members.fetch(userId).catch(() => null);
-  if (!member) return false;
+  if (member) await member.timeout(null).catch(() => {});
+  await guild.bans.remove(userId).catch(() => {});
   return true;
 }
 
-// --- EXPLICITLY SEPARATED BY PARSER BOUNDARIES ---
-export function discordMemberCounts() {
-  if (!client) return {};
-  const counts = {};
-  client.guilds.cache.forEach(g => {
-    counts[g.id] = g.memberCount || 0;
-  });
-  return counts;
+export async function cautionDiscordUser(channelId, { userId }, text) {
+  if (!client || !channelId) return false;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (channel?.send) {
+    await channel.send({ content: `<@${userId}> ${text}`, allowedMentions: { users: [userId] } }).catch(() => {});
+  }
+  return true;
+}
+
+export async function discordMemberCounts() {
+  if (!client) return [];
+  return [...client.guilds.cache.values()].map(g => ({ key: `discord:${g.id}`, count: g.memberCount }));
+}
+
+// Posts an approved reply as a real Discord reply to the member's message.
+// allowedMentions stops a draft containing @everyone from pinging anyone.
+export async function replyDiscord(guildId, channelId, messageId, text) {
+  if (!client) return false;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.send || channel.guildId !== guildId) return false;
+  const opts = { content: text.slice(0, 1900), allowedMentions: { parse: [], repliedUser: true } };
+  const original = messageId ? await channel.messages?.fetch(messageId).catch(() => null) : null;
+  if (original) await original.reply(opts); else await channel.send(opts);
+  return true;
+}
+
+// Channels the bot can actually write in, for the "post to your community" picker.
+// 0 is a normal text channel and 5 is an announcement channel.
+export function listDiscordChannels(guildId) {
+  const g = client?.guilds.cache.get(guildId);
+  const me = g?.members.me;
+  if (!g || !me) return [];
+  return [...g.channels.cache.values()]
+    .filter((c) => (c.type === 0 || c.type === 5) && c.permissionsFor(me)?.has([PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]))
+    .map((c) => ({ id: c.id, name: c.name, position: c.rawPosition ?? 0 }))
+    .sort((a, b) => a.position - b.position)
+    .map(({ id, name }) => ({ id, name }));
+}
+
+// Posts an approved message in a channel. allowedMentions stops @everyone and @here from pinging anyone.
+export async function postDiscord(guildId, channelId, text) {
+  if (!client) return false;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.send || channel.guildId !== guildId) return false;
+  await channel.send({ content: text.slice(0, 1900), allowedMentions: { parse: [] } });
+  return true;
 }
