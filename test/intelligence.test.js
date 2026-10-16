@@ -64,11 +64,49 @@ test('FAQs Intelligence scans captured questions, preserves evidence, and approv
   assert.ok(draft.moderatorAnswers.length >= 1, 'draft should retain captured moderator guidance');
   assert.equal(draft.status, 'pending');
 
+  // The pending proposal must not enter the normal reply knowledge retrieval path.
+  assert.ok(!db.knowledgeChunks('telegram:-100').some(x => /FAQs Intelligence:/.test(x.title || '')),
+    'pending FAQ drafts must not be supplied to normal reply generation');
+
   const approved = await api(`/api/pulse/faq-intelligence/${draft.id}`, { method: 'PATCH', body: { status: 'approved' } });
   assert.equal(approved.status, 200);
   assert.equal((await approved.json()).status, 'approved');
   const bank = db.listKnowledge('telegram:-100');
   assert.ok(bank.some(x => x.title.startsWith('FAQs Intelligence:')), 'approved answer should be added to existing knowledge bank');
+  assert.ok(db.knowledgeChunks('telegram:-100').some(x => /FAQs Intelligence:/.test(x.title || '')),
+    'approved FAQ must become available through the official knowledge retrieval path');
+
+  // Verify the real draft API sees the approved answer only after approval.
+  const followup = discussion({ text: 'How long does unstaking take?', idSuffix: 'faq-approved-followup' });
+  const replyResponse = await api(`/api/pulse/discussions/${followup.id}/draft`, { method: 'POST', body: { fresh: true } });
+  assert.equal(replyResponse.status, 200);
+  const replyDraft = await replyResponse.json();
+  assert.ok(replyDraft.knowledge.some(x => String(x.title || '').startsWith('FAQs Intelligence:')),
+    'real draft endpoint should retrieve approved FAQ knowledge');
+  assert.match(replyDraft.text, /21 days/i, 'draft should use the approved official answer');
+});
+
+test('real draft API retrieves chain-specific official facts rather than applying one duration to every chain', async () => {
+  const source = await api('/api/pulse/knowledge/telegram/-100', { method: 'POST', body: {
+    type: 'text', title: 'Official Chain Timing Facts',
+    text: 'Osmosis migration guide: the official Osmosis migration window lasts 14 days. This duration applies to Osmosis migration only. Cosmos Hub ATOM unstaking FAQ: the ATOM unbonding period is 21 days and this duration applies to Cosmos Hub only.'
+  } });
+  assert.equal(source.status, 200);
+
+  const osmosis = discussion({ text: 'For Osmosis, how long is the migration window?', idSuffix: 'osmosis-window' });
+  const osmosisResponse = await api(`/api/pulse/discussions/${osmosis.id}/draft`, { method: 'POST' });
+  assert.equal(osmosisResponse.status, 200);
+  const osmosisDraft = await osmosisResponse.json();
+  assert.match(osmosisDraft.text, /14 days/i);
+  assert.ok(osmosisDraft.knowledge.some(x => /Official Chain Timing Facts/.test(x.title || '')));
+
+  const atom = discussion({ text: 'What is the unstaking period for ATOM on Cosmos Hub?', idSuffix: 'atom-unbonding' });
+  const atomResponse = await api(`/api/pulse/discussions/${atom.id}/draft`, { method: 'POST' });
+  assert.equal(atomResponse.status, 200);
+  const atomDraft = await atomResponse.json();
+  assert.match(atomDraft.text, /21 days/i);
+  assert.doesNotMatch(atomDraft.text, /14 days/i);
+  assert.ok(atomDraft.knowledge.some(x => /Official Chain Timing Facts/.test(x.title || '')));
 });
 
 test('FAQs Intelligence and Technical Push do not expose another community data', async () => {

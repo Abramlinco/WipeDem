@@ -288,14 +288,20 @@ export async function makeDraft({ discussion: d, brief, trends, knowledge = [] }
 
   let text = '', via = 'template';
   let note = parts.length > 1 ? `This message had ${parts.length} separate questions. The reply covers each one.` : null;
-  if (aiStatus().mode !== 'none') {
+  // Price/investment questions always use the deterministic boundary response.
+  // Do not rely on probabilistic model wording or regexes alone to prevent
+  // predictions and financial advice from reaching a moderator's draft.
+  const priceSensitive = routes.includes('price');
+  if (aiStatus().mode !== 'none' && !priceSensitive) {
     try {
       text = await complete({ system: SYSTEM, user: buildUser(ctx), maxTokens: 260 });
-      text = text.replace(/^["“]|["”]$/g, '').trim();
+      text = text.replace(/^['“]|['”]$/g, '').trim();
       if (text) via = 'ai';
     } catch (e) {
       note = `${e.message} Used the built-in drafter instead.`;
     }
+  } else if (priceSensitive && aiStatus().mode !== 'none') {
+    note = 'Price-sensitive question: used the built-in safe response instead of AI.';
   }
   if (!text) text = templateDraft(ctx);
 

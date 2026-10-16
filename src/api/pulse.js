@@ -575,7 +575,11 @@ pulseRouter.patch('/faq-intelligence/:id', async (req, res) => {
     const title = `FAQs Intelligence: ${String(rec.question).slice(0, 70)}`;
     const exists = listKnowledge(rec.communityKey).some(s => s.title === title);
     if (!exists) {
-      const text = `Question: ${rec.question}\nApproved answer: ${rec.answer}\nVerification note: ${rec.verificationNote || ''}`;
+      // Keep the reusable answer at the start of the indexed text. If the
+      // question is indexed as the first sentence, retrieval can quote the
+      // question back instead of the approved answer. The question remains
+      // in the source title for matching and traceability.
+      const text = `${rec.answer}\n\nVerification note: ${rec.verificationNote || ''}`;
       const src = await addKnowledgeSource(rec.communityKey, { type: 'text', title, text, url: '', refreshHours: 0 });
       // A text knowledge source is indexed by the existing knowledge refresher.
       await refreshKnowledgeSource(src);
