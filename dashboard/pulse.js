@@ -701,7 +701,12 @@ const PULSE_ACTS = {
   },
   'x-authorize': async (el) => {
     el.disabled = true; el.textContent = 'Opening X…';
-    try { const r = await api(`/pulse/x/${el.dataset.platform}/${enc(el.dataset.community)}/authorize`, { method: 'POST' }); window.location.href = r.url; }
+    // Open the tab first, while the click still counts, so the browser does not block it. The dashboard stays where it is.
+    const tab = window.open('about:blank', '_blank');
+    try {
+      const r = await api(`/pulse/x/${el.dataset.platform}/${enc(el.dataset.community)}/authorize`, { method: 'POST' });
+      if (tab && !tab.closed) tab.location.href = r.url; else window.location.href = r.url; // pop-ups blocked: fall back to this tab
+    } catch (err) { if (tab && !tab.closed) tab.close(); throw err; }
     finally { el.disabled = false; el.textContent = 'Connect your X account'; }
   },
   'campaign-template': async (el) => {
@@ -865,3 +870,12 @@ document.addEventListener('submit', async e => {
   } catch (err) { campaignPlannerState.messages.push({ id: `e-${Date.now()}`, role: 'assistant', text: `I couldn't generate that response: ${err.message || 'Please try again.'}` }); }
   await loadCampaignPlanner();
 });
+
+// The X tab tells this tab when it is finished (same site, so this works even after X was in between).
+try {
+  new BroadcastChannel('sentinel-x').onmessage = (e) => {
+    if (e.data?.type !== 'x-connected') return;
+    toast('X account connected.');
+    reloadPulse();
+  };
+} catch { /* very old browser: the Setup page shows the account after a reload */ }

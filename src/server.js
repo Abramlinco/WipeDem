@@ -31,18 +31,28 @@ export async function createApp() {
   app.use(express.json({ limit: '50kb' }));
   app.use(attachSession);
   app.use('/auth', authRouter);
+  // A small page for the X tab. No inline script (the security policy blocks it), so the message is plain HTML.
+  const xPage = (res, status, title, message) => res.status(status).type('html').send(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>` +
+    `<body style="font-family:system-ui,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1.25rem;line-height:1.5">` +
+    `<h2>${title}</h2><p>${String(message).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</p>` +
+    `<p><a href="/#/pulse/setup">Back to Sentinel</a></p>`);
   app.get('/auth/x/callback', async (req, res) => {
     try {
       const pending = req.session?.xOAuthPending;
-      if (!pending || !req.query.state || req.query.state !== pending.state || Date.now() - pending.createdAt > 10 * 60 * 1000) return res.status(400).send('X authorization expired or could not be verified. Return to Sentinel and try again.');
+      if (!pending || !req.query.state || req.query.state !== pending.state || Date.now() - pending.createdAt > 10 * 60 * 1000) return xPage(res, 400, 'X link expired', 'This X sign-in link expired or was already used. Go back to Sentinel and press Connect again.');
       delete req.session.xOAuthPending;
       await (await import('./db.js')).saveSessionRecord(req.session);
-      if (req.query.error) return res.status(400).send('X authorization was cancelled. You can close this tab and return to Sentinel.');
+      if (req.query.error) return xPage(res, 400, 'X connection cancelled', 'You cancelled the X sign-in. You can close this tab and return to Sentinel.');
+      if (!config.secretKey) return xPage(res, 500, 'Sentinel is not ready', 'SENTINEL_SECRET is not configured. Set it and restart Sentinel before connecting X.');
       const token = await exchangeXCode({ code: String(req.query.code || ''), verifier: pending.verifier, redirectUri: config.xOAuthRedirectUri, clientId: config.xClientId, clientSecret: config.xClientSecret });
-      if (!config.secretKey) return res.status(500).send('SENTINEL_SECRET is not configured. Set it and restart Sentinel before connecting X.');
       await setXAccount(pending.communityKey, { sealed: seal({ authType: 'oauth2', accessToken: token.accessToken, refreshToken: token.refreshToken, expiresAt: token.expiresAt }, config.secretKey), handle: token.username, connectedAt: new Date().toISOString(), authType: 'oauth2' });
-      return res.redirect('/#/pulse/setup');
-    } catch (e) { console.error('[x-oauth]', e.message); return res.status(502).send('Sentinel could not finish connecting X. Check the X app callback URL and OAuth permissions, then try again.'); }
+      return res.redirect('/x-done.html');
+    } catch (e) {
+      console.error('[x-oauth]', e.message);
+      // The messages come from Sentinel's own X error handling: no keys or tokens are ever in them.
+      return xPage(res, 502, 'Sentinel could not finish connecting X', e.message || 'Check the X app callback URL and OAuth permissions, then try again.');
+    }
   });
   app.use('/api', apiRouter);
   app.use(express.static(path.join(__dirname, '..', 'dashboard')));
