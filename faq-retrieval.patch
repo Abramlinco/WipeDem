@@ -1,0 +1,39 @@
+diff -ru a/src/api/pulse.js b/src/api/pulse.js
+--- a/src/api/pulse.js	2026-10-16 10:47:50.938229052 +0000
++++ b/src/api/pulse.js	2026-10-16 10:47:50.992375152 +0000
+@@ -575,12 +575,11 @@
+     const title = `FAQs Intelligence: ${String(rec.question).slice(0, 70)}`;
+     const exists = listKnowledge(rec.communityKey).some(s => s.title === title);
+     if (!exists) {
+-      // Keep the reusable answer at the start of the indexed text. If the
+-      // question is indexed as the first sentence, retrieval can quote the
+-      // question back instead of the approved answer. The question remains
+-      // in the source title for matching and traceability.
+-      const text = `${rec.answer}\n\nVerification note: ${rec.verificationNote || ''}`;
+-      const src = await addKnowledgeSource(rec.communityKey, { type: 'text', title, text, url: '', refreshHours: 0 });
++      // The indexed text is the approved answer only, so it is the only thing a reply can quote.
++      // The question goes in `search`, which retrieval matches against but never quotes, so members
++      // asking it in their own words still find this answer. The internal verification note stays on
++      // the FAQ record and is not indexed, so it can never be sent to a member.
++      const src = await addKnowledgeSource(rec.communityKey, { type: 'text', title, text: String(rec.answer || ''), search: String(rec.question || ''), url: '', refreshHours: 0 });
+       // A text knowledge source is indexed by the existing knowledge refresher.
+       await refreshKnowledgeSource(src);
+     }
+diff -ru a/src/pulse/knowledge.js b/src/pulse/knowledge.js
+--- a/src/pulse/knowledge.js	2026-10-16 10:47:50.940873784 +0000
++++ b/src/pulse/knowledge.js	2026-10-16 10:47:58.294121612 +0000
+@@ -121,7 +121,13 @@
+ export async function readSource(source, { fetcher = fetchText, now = new Date() } = {}) {
+   if (source.type === 'text') {
+     const text = String(source.text || '');
+-    return { title: source.title, chunks: chunkText(text).map((t) => ({ text: t })), chars: text.length };
++    // `search` is optional, extra words that make a chunk findable without being part of what a reply
++    // may quote. An approved FAQ uses it for the member's question, while `text` stays the answer.
++    const search = String(source.search || '').trim();
++    // chunkText drops fragments under 20 characters, so a very short answer ("About 21 days.") keeps its own chunk.
++    const pieces = chunkText(text);
++    if (!pieces.length && text.trim()) pieces.push(text.trim());
++    return { title: source.title, chunks: pieces.map((t) => (search ? { text: t, search } : { text: t })), chars: text.length };
+   }
+   if (source.type === 'url') {
+     const raw = await fetcher(source.url, { maxBytes: 3 * 1024 * 1024 });

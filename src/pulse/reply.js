@@ -312,7 +312,7 @@ export async function makeDraft({ discussion: d, brief, trends, knowledge = [], 
       note = `${e.message} Used the built-in drafter instead.`;
     }
   } else if (priceSensitive && aiStatus().mode !== 'none') {
-    note = 'Price-sensitive question: used the built-in safe response instead of AI.';
+    note = (note ? note + ' ' : '') + 'The price question used the built-in safe response instead of AI.';
   }
   if (!text) text = templateDraft(ctx);
 

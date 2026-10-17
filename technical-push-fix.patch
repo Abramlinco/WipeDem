@@ -1,0 +1,492 @@
+diff --git a/dashboard/app.js b/dashboard/app.js
+index 5a52328..b0791fa 100644
+--- a/dashboard/app.js
++++ b/dashboard/app.js
+@@ -751,7 +751,7 @@ async function saveSetting(method, path, body, focusId) {
+ /* FAQs Intelligence and Technical Push */
+ let faqRows = [], techRows = [];
+ let faqFilter = { platform: 'all', status: 'pending' }, faqDays = 30;
+-let techSettingsOpen = false;
++let techSettingsOpen = false, techKey = '', techDays = 7;
+ // Remember whether the delivery settings are open, so a refresh does not snap them shut while you type.
+ document.addEventListener('toggle', (e) => { if (e.target.matches?.('details.fold')) techSettingsOpen = e.target.open; }, true);
+ function communityOptions(selected = '') {
+@@ -799,14 +799,14 @@ function drawFaqs() {
+ async function loadTechnicalPush() {
+   const cs = state.me.communities || [];
+   if (!cs.length) return setPage(html`<div class="topbar"><h1>Technical Push</h1></div>${onboarding(null)}`);
+-  const key = state.scope !== 'all' && cs.some(c=>c.key===state.scope) ? state.scope : cs[0].key;
++  const key = cs.some(c=>c.key===techKey) ? techKey : (state.scope !== 'all' && cs.some(c=>c.key===state.scope) ? state.scope : cs[0].key);
+   const c = cs.find(x=>x.key===key) || cs[0];
+   const data = await api(`/pulse/technical-push${qs({community:key})}`);
+   techRows = data.reports.filter(r=>r.communityKey===key);
+   const cfg = data.settings[key] || {};
+   const cadenceName = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }[cfg.cadence || 'weekly'];
+   const settingsLine = cfg.delivery === 'auto' ? `${cadenceName} · sends to ${cfg.destinationPlatform || 'a channel'}` : `${cadenceName} · manual download`;
+-  setPage(html`<div class="topbar"><div><h1>Technical Push</h1><div class="muted">Aggregate reported technical issues into evidence-led developer reports.</div></div><div class="tools"><select id="tech-community">${communityOptions(key)}</select><select id="tech-days"><option value="1">24 hours</option><option value="7" selected>7 days</option><option value="30">30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="tech-generate">Generate report</button></div></div>
++  setPage(html`<div class="topbar"><div><h1>Technical Push</h1><div class="muted">Aggregate reported technical issues into evidence-led developer reports.</div></div><div class="tools"><select id="tech-community" data-change="tech-community">${communityOptions(key)}</select><select id="tech-days" data-change="tech-days"><option value="1" ${techDays===1?'selected':''}>24 hours</option><option value="7" ${techDays===7?'selected':''}>7 days</option><option value="30" ${techDays===30?'selected':''}>30 days</option><option value="90" ${techDays===90?'selected':''}>90 days</option></select><button class="btn primary" data-act="tech-generate">Generate report</button></div></div>
+   <details class="panel fold" ${techSettingsOpen ? 'open' : ''}><summary><span><b>Delivery settings</b> <span class="muted">${c.name}</span></span><span class="tools"><span class="tag">${settingsLine}</span><span class="chev">▾</span></span></summary><div class="pad"><div class="formgrid">
+   <label class="fld"><span>Cadence preference</span><select id="tech-cadence"><option value="daily" ${cfg.cadence==='daily'?'selected':''}>Daily</option><option value="weekly" ${(!cfg.cadence||cfg.cadence==='weekly')?'selected':''}>Weekly</option><option value="monthly" ${cfg.cadence==='monthly'?'selected':''}>Monthly</option></select></label>
+   <label class="fld"><span>Delivery</span><select id="tech-delivery"><option value="download" ${cfg.delivery!=='auto'?'selected':''}>Manual download</option><option value="auto" ${cfg.delivery==='auto'?'selected':''}>Send to channel</option></select></label>
+@@ -814,7 +814,7 @@ async function loadTechnicalPush() {
+   <label class="fld"><span>Destination community ID</span><input id="tech-destination" value="${cfg.destinationCommunityId||''}" placeholder="Server or chat ID"></label>
+   <label class="fld"><span>Destination channel ID</span><input id="tech-channel" value="${cfg.destinationChannelId||''}" placeholder="Discord channel ID; optional for Telegram"></label>
+   </div><button class="btn primary" data-act="tech-settings" style="margin-top:12px">Save settings</button><p class="muted">Choose Send to channel and Sentinel will generate and send this report on its own at the chosen cadence. A period with no technical reports sends nothing. You can always generate and download a report yourself.</p></div></details>
+-  ${techRows.length?techRows.map(r=>html`<div class="panel"><div class="panelhead"><h2>Technical report · ${dateShort(r.createdAt)} <span>${r.issueCount} issue reports · ${r.periodDays} days</span></h2><span class="tag">${r.pushedAt?'Sent':'Ready'}</span></div><div class="pad"><pre style="white-space:pre-wrap;font:inherit">${r.content}</pre><div class="tools"><button class="btn primary" data-act="tech-download" data-id="${r.id}">Download report</button><button class="btn" data-act="tech-push" data-id="${r.id}">Send to channel</button></div></div></div>`) : html`<div class="panel"><div class="pad empty">No technical reports yet. Generate a report to aggregate recent issues.</div></div>`}`);
++  ${techRows.length?techRows.map(r=>html`<div class="panel"><div class="panelhead"><h2>Technical report · ${dateShort(r.createdAt)} <span>${r.issueCount} issue report(s)${r.reporterCount ? ` from ${r.reporterCount} member(s)` : ''} · ${r.periodDays} days</span></h2><span class="tag">${r.pushedAt?'Sent':'Ready'}</span></div><div class="pad"><pre style="white-space:pre-wrap;font:inherit">${r.content}</pre><div class="tools"><button class="btn primary" data-act="tech-download" data-id="${r.id}">Download report</button><button class="btn" data-act="tech-push" data-id="${r.id}">Send to channel</button></div></div></div>`) : html`<div class="panel"><div class="pad empty">No technical reports yet. Generate a report to aggregate recent issues.</div></div>`}`);
+ }
+ async function saveFaq(id, status) {
+   const answer = $(`[data-faq-answer="${id}"]`)?.value || '';
+@@ -847,16 +847,18 @@ const ACTS = {
+   'faq-dismiss': el => saveFaq(el.dataset.id,'dismissed'),
+   'tech-generate': async () => {
+     const key=$('#tech-community')?.value||'', c=state.me.communities.find(x=>x.key===key); if(!c)return toast('Choose a community',true);
+-    const r=await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/generate`,{method:'POST',body:{days:Number($('#tech-days')?.value||7)}});
+-    toast(`Report generated: ${r.issueCount} matching reports`); await loadTechnicalPush();
++    techKey = key; techDays = Number($('#tech-days')?.value || 7);
++    const r=await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/generate`,{method:'POST',body:{days:techDays}});
++    toast(`Report generated: ${r.issueCount} issue report(s)`); await loadTechnicalPush();
+   },
+   'tech-settings': async () => {
+     const key=$('#tech-community')?.value||'', c=state.me.communities.find(x=>x.key===key); if(!c)return toast('Choose a community',true);
++    techKey = key;
+     await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/settings`,{method:'POST',body:{cadence:$('#tech-cadence').value,delivery:$('#tech-delivery').value,destinationPlatform:$('#tech-platform').value,destinationCommunityId:$('#tech-destination').value.trim(),destinationChannelId:$('#tech-channel').value.trim(),enabled:$('#tech-delivery').value==='auto'}});
+     toast('Settings saved'); techSettingsOpen = true; await loadTechnicalPush();
+   },
+   'tech-download': el => { const r=techRows.find(x=>x.id===el.dataset.id); if(r)downloadText(`sentinel-technical-report-${r.createdAt.slice(0,10)}.txt`,r.content); },
+-  'tech-push': async el => { await api(`/pulse/technical-push/${enc(el.dataset.id)}/push`,{method:'POST',body:{}}); toast('Report sent'); await loadTechnicalPush(); },
++  'tech-push': async el => { const r = await api(`/pulse/technical-push/${enc(el.dataset.id)}/push`,{method:'POST',body:{}}); toast(r.parts > 1 ? `Report sent in ${r.parts} messages` : 'Report sent'); await loadTechnicalPush(); },
+   'add-community': (el, e) => { e.stopPropagation(); openAddCommunity(el.dataset.platform); },
+   'tg-login': telegramLogin,
+   'tg-connect': async () => { await telegramLogin(); },
+@@ -891,6 +893,9 @@ const CHANGES = {
+   scope: (el) => { state.scope = el.value; render(); },
+   days: (el) => { state.reportDays = Number(el.value); render(); },
+   'settings-community': (el) => { state.settings.id = el.value; loadSettings(state.settings.platform); },
++  // Technical Push: choosing another community shows that community's reports and settings.
++  'tech-community': (el) => { techKey = el.value; techSettingsOpen = false; loadTechnicalPush().catch(fail); },
++  'tech-days': (el) => { techDays = Number(el.value); },
+   penalty: (el) => {
+     const box = el.closest('.penalty');
+     const mode = $('select', box).value;
+diff --git a/src/api/pulse.js b/src/api/pulse.js
+index aef3a1a..1bf2dea 100644
+--- a/src/api/pulse.js
++++ b/src/api/pulse.js
+@@ -10,7 +10,7 @@ import {
+ import { platforms } from '../platform.js';
+ import { makeDraft, checkPolicy, withinAllowance } from '../pulse/reply.js';
+ import { buildContext } from '../pulse/context.js';
+-import { scanFaqGaps, generateTechnicalReport, chatLink } from '../pulse/intelligence.js';
++import { scanFaqGaps, generateTechnicalReport, deliverReport, chatLink } from '../pulse/intelligence.js';
+ import { unsupportedFigures, PLACEHOLDER as NO_ANSWER, NOTES } from '../pulse/faqlogic.js';
+ import { applyFocus, focusKeywords, PRESETS } from '../pulse/focus.js';
+ import { aiStatus, complete } from '../pulse/ai/provider.js';
+@@ -634,10 +634,11 @@ pulseRouter.post('/technical-push/:id/push', async (req, res) => {
+   if (!settings.destinationPlatform || !settings.destinationCommunityId) return res.status(400).json({ error: 'Configure a destination community in Technical Push settings first.' });
+   const targetKey = communityKey(settings.destinationPlatform, settings.destinationCommunityId);
+   if (!req.access.keys.has(targetKey)) return res.status(403).json({ error: 'You do not manage the configured destination community.' });
+-  const ok = await platforms[settings.destinationPlatform].post(settings.destinationCommunityId, settings.destinationChannelId || settings.destinationCommunityId, report.content.slice(0, 3900));
+-  if (!ok) return res.status(502).json({ error: 'Could not deliver the report to the configured channel.' });
++  // A long report goes out as a numbered series of messages, so nothing is cut off.
++  const out = await deliverReport(report, settings);
++  if (!out.ok) return res.status(502).json({ error: out.sent ? `Only ${out.sent} of ${out.parts} parts reached the channel. Check the bot can post there, then send again.` : 'Could not deliver the report to the configured channel.' });
+   await markTechnicalReportPushed(report.id, req.access.keys);
+-  res.json({ ok: true });
++  res.json({ ok: true, parts: out.parts });
+ });
+ 
+ /* ---------- X ---------- */
+diff --git a/src/db.js b/src/db.js
+index 780430f..549d230 100644
+--- a/src/db.js
++++ b/src/db.js
+@@ -432,7 +432,16 @@ export function addDiscussion(item) {
+   db.data.discussions.unshift(record);
+   if (record.messageId) msgIndex.set(msgKey(record.platform, record.communityId, record.messageId), record);
+   if (db.data.discussions.length > MAX_DISCUSSIONS) {
+-    for (const old of db.data.discussions.splice(MAX_DISCUSSIONS)) {
++    // Make room by dropping the oldest messages that are not concerns first. Concerns (failures, errors,
++    // complaints) are what Technical Push reports on, so a busy community's chatter must not push them out.
++    const list = db.data.discussions;
++    const dropped = [];
++    let excess = list.length - MAX_DISCUSSIONS;
++    for (let i = list.length - 1; i > 0 && excess > 0; i--) {
++      if (list[i].kind !== 'concern') { dropped.push(list.splice(i, 1)[0]); excess--; }
++    }
++    if (excess > 0) dropped.push(...list.splice(list.length - excess));
++    for (const old of dropped) {
+       if (old.messageId) msgIndex.delete(msgKey(old.platform, old.communityId, old.messageId));
+     }
+   }
+diff --git a/src/pulse/analyze.js b/src/pulse/analyze.js
+index 3a705b5..3e3aac0 100644
+--- a/src/pulse/analyze.js
++++ b/src/pulse/analyze.js
+@@ -19,7 +19,7 @@ const has = (re, t) => re.test(t);
+ const IDEA = /\b(we should|you should|you guys should|what if|how about|why not|why don't (we|you)|i suggest|my suggestion|suggestion|i propose|proposal|idea|ideas|would be (so |really |very )?(cool|great|nice|awesome|good|useful)|it would be (so |really |very )?(cool|great|nice|awesome|good|useful)|can we (have|add|get|please)|could we (have|add|get)|please (add|make|bring|consider)|feature request|would love (to see|a|an)|i'd love (to see|a|an)|need (a|an) (way|option|feature)|maybe (we|you) (could|can)|imagine if|consider (adding|making|having))\b/i;
+ const QUESTION_START = /^(how|what|when|where|why|who|which|is|are|am|can|could|will|would|does|do|did|should|has|have|any(one|body)|someone)\b/i;
+ const QUESTION_ANY = /\b(anyone know|does anybody|can someone|how do i|how can i|how do we|where can i|where do i|when is|when will|is there a|is it possible|any update|any news)\b/i;
+-const CONCERN = /\b(not working|doesn't work|does not work|isn't working|broken|bug|buggy|glitch|error|failed|failing|stuck|can't|cannot|unable to|too (slow|expensive|high|low|late|confusing)|disappointed|frustrat\w+|annoying|worried|concern(ed)?|scared|unfair|misleading|no (response|reply|update|communication)|ignored|where is|still waiting|rug|rugged|scam|lost (my|our)|never (received|got|arrived)|fees? (are|is) (too|so|insane|crazy))\b/i;
++const CONCERN = /\b(not working|doesn't work|does not work|isn't working|broken|bug|buggy|bugs|bugged|glitch|glitches|error|errors|failed|failing|fails?|failures?|crash(es|ed|ing)?|freez(es|ing)|froze(n)?|tim(e[ds]?|ing) ?outs?|reverted|nothing happens|won't (load|work|connect|sync|go through|confirm|open|send)|not (loading|showing|appearing|syncing|connecting|updating|responding|confirming)|(doesn't|does not|didn't|did not) (load|show|appear|sync|connect|update|respond|go through|confirm)|(is|are) down|having (an? )?(issues?|problems?|trouble)|keeps? (crashing|failing|freezing|disconnecting)|stuck|can't|cannot|unable to|too (slow|expensive|high|low|late|confusing)|disappointed|frustrat\w+|annoying|worried|concern(ed)?|scared|unfair|misleading|no (response|reply|update|communication)|ignored|where is|still waiting|rug|rugged|scam|lost (my|our)|never (received|got|arrived)|fees? (are|is) (too|so|insane|crazy))\b/i;
+ const PRAISE = /\b(love (it|this|the|how)|great (job|work|update|team|project)|awesome|amazing|well done|thank you|thanks (for|team|guys)|good (job|work|update)|impressed|bullish|best (project|community|team))\b/i;
+ 
+ const POSITIVE = ['love', 'great', 'awesome', 'amazing', 'good', 'nice', 'excellent', 'bullish', 'excited', 'happy', 'thanks', 'thank', 'helpful', 'smooth', 'fast', 'best', 'impressed', 'perfect', 'win', 'wow'];
+diff --git a/src/pulse/faqlogic.js b/src/pulse/faqlogic.js
+index 2c653ab..7158f6e 100644
+--- a/src/pulse/faqlogic.js
++++ b/src/pulse/faqlogic.js
+@@ -10,7 +10,7 @@ import { tokenize, retrieve } from './knowledge.js';
+ /* What kind of conversation is it?                                    */
+ /* ------------------------------------------------------------------ */
+ 
+-export const TOPICS = ['staking', 'token', 'bridge', 'wallet', 'fees', 'mainnet', 'support', 'security', 'app', 'rewards', 'vesting'];
++export const TOPICS = ['staking', 'token', 'bridge', 'wallet', 'fees', 'mainnet', 'support', 'security', 'app', 'rewards', 'vesting', 'airdrop', 'liquidity', 'dex', 'mint', 'nft', 'governance', 'quests', 'l2', 'listing', 'tokenomics'];
+ 
+ // Same wording Technical Push has always used to spot technical reports.
+ export const TECH_RE = /error|fail|bug|broken|stuck|not working|can't|cannot|unable|transaction|migrat|wallet|connect|bridge|claim|stake|unstake|gas|rpc|api|revert|pending|balance|technical|issue|problem|crash|timeout|exploit/i;
+@@ -33,6 +33,79 @@ export function categorize(d) {
+ }
+ const SEVERITY = { question: 0, complaint: 1, technical: 2 };
+ 
++/* ------------------------------------------------------------------ */
++/* Technical Push: what counts as a reported issue                     */
++/* ------------------------------------------------------------------ */
++
++// Something went wrong. A how-to question ("how do I stake?") is not an issue report, and neither is
++// a general worry, so a message needs a failure in it AND something technical it happened to.
++const FAILURE = /\b(fail(s|ed|ing|ure|ures)?|errors?|bugs?|bugg(y|ed)|glitch(es|ed|y)?|broken|crash(es|ed|ing)?|stuck|froze(n)?|freez(es|ing)|hang(s|ing)?|tim(e[ds]?|ing) ?outs?|revert(s|ed|ing)?|rejected|declined|not (working|loading|showing|appearing|syncing|connecting|updating|responding|displaying|going through|confirming)|(doesn'?t|does not|isn'?t|won'?t|didn'?t|did not) (work|load|show|appear|sync|connect|update|respond|go through|confirm)|can'?t|cannot|can not|unable to|never (received|arrived|showed|got)|missing|disappeared|(is|are|was|keeps?) (down|offline)|nothing happens|lost (my|our)|wrong (balance|amount))\b/i;
++const TECH_CONTEXT = /\b(wallets?|metamask|phantom|ledger|keplr|txs?|txn|transactions?|bridg(e|es|ing)|bridged|stak(e|ed|es|ing)|unstak(e|ed|es|ing)|claim(s|ed|ing)?|withdraw(al|als|ing)?|deposit(s|ing)?|swap(s|ping)?|gas|rpc|api|app|website|site|dashboard|portal|page|login|log in|sign in|connect(ing|ion)?|sync(ing)?|node|validator|mint(ing|ed)?|airdrop|balance|transfer(s|red|ring)?|pool|liquidity|button|interface|kyc|verification|extension|mobile|ios|android|browser|network|chain|mainnet|testnet|contract|explorer|rewards?|ibc|ui)\b/i;
++
++/** True when a message reports something that broke, not a question about how a thing works. */
++export function isTechnicalIssue(d) {
++  if (!d || d.kind === 'praise') return false;
++  const t = String(d.text || '').replace(/can'?t wait/gi, ' ');
++  if (!FAILURE.test(t)) return false;
++  return TECH_CONTEXT.test(t) || (d.topics || []).some((x) => TOPICS.includes(x));
++}
++
++/**
++ * Groups issue reports by topic and counts what an engineer wants to know: how many reports, how many
++ * different members, when it started and last happened, and how many a moderator has already answered.
++ * Biggest problem first.
++ */
++export function groupIssues(rows) {
++  const by = new Map();
++  for (const d of rows) {
++    const topic = (d.topics || []).find((t) => TOPICS.includes(t)) || 'other technical issue';
++    if (!by.has(topic)) by.set(topic, []);
++    by.get(topic).push(d);
++  }
++  const answered = (d) => !!(d.staffReplied || (d.staffReplies || []).length);
++  const groups = [...by.entries()].map(([topic, items]) => {
++    const times = items.map((d) => d.createdAt).sort();
++    return {
++      topic, items, count: items.length,
++      reporters: new Set(items.map((d) => d.userId || d.username || d.id)).size,
++      firstAt: times[0], lastAt: times[times.length - 1],
++      answered: items.filter(answered).length
++    };
++  });
++  return groups.sort((a, b) => b.count - a.count || b.reporters - a.reporters || a.topic.localeCompare(b.topic));
++}
++
++/* ------------------------------------------------------------------ */
++/* Fitting a long report into chat messages                            */
++/* ------------------------------------------------------------------ */
++
++/**
++ * Splits text at line breaks into parts that each fit a chat message, labelled (1/3), (2/3)...
++ * Discord allows 2000 characters and Telegram 4096, and a report is usually longer than either.
++ * Past maxParts the rest is left out and the last part says so, rather than flooding the channel.
++ */
++export function splitMessage(text, limit = 1900, maxParts = 8) {
++  const room = limit - 12;
++  const pieces = [];
++  let cur = '';
++  const flush = () => { if (cur.trim()) pieces.push(cur.replace(/\s+$/, '')); cur = ''; };
++  for (const raw of String(text || '').split('\n')) {
++    let line = raw;
++    while (line.length > room) {
++      const cut = line.lastIndexOf(' ', room) > room * 0.5 ? line.lastIndexOf(' ', room) : room;
++      if (cur) flush();
++      pieces.push(line.slice(0, cut)); line = line.slice(cut).trimStart();
++    }
++    if (cur.length + line.length + 1 > room) flush();
++    cur += (cur ? '\n' : '') + line;
++  }
++  flush();
++  if (pieces.length <= 1) return pieces.length ? [pieces[0]] : [];
++  let parts = pieces;
++  if (parts.length > maxParts) parts = [...parts.slice(0, maxParts - 1), 'The rest of this report is in the Sentinel dashboard. Download the full report there.'];
++  return parts.map((t, i) => `(${i + 1}/${parts.length}) ${t}`);
++}
++
+ /* ------------------------------------------------------------------ */
+ /* Grouping the same question asked in different words                 */
+ /* ------------------------------------------------------------------ */
+diff --git a/src/pulse/intelligence.js b/src/pulse/intelligence.js
+index 3ee7f45..21065ad 100644
+--- a/src/pulse/intelligence.js
++++ b/src/pulse/intelligence.js
+@@ -1,7 +1,7 @@
+ import crypto from 'node:crypto';
+ import {
+   listDiscussions, listFaqDrafts, addFaqDraft, updateFaqDraft, knowledgeChunks, getSettings,
+-  addTechnicalReport, markTechnicalReportPushed, saveTechnicalSettings,
++  addTechnicalReport, markTechnicalReportPushed, saveTechnicalSettings, listTechnicalReports,
+   allTechnicalSettings, discussionCommunityKeys
+ } from '../db.js';
+ import { platforms } from '../platform.js';
+@@ -10,8 +10,8 @@ import { aiStatus, complete } from './ai/provider.js';
+ import { checkPolicy, withinAllowance } from './reply.js';
+ import { retrieve, tokenize } from './knowledge.js';
+ import {
+-  TECH_RE, TOPICS, isCandidate, clusterQuestions, fingerprint, findSimilarDraft, coverage,
+-  answersFor, NOTES, unsupportedFigures
++  isCandidate, clusterQuestions, fingerprint, findSimilarDraft, coverage,
++  answersFor, NOTES, unsupportedFigures, isTechnicalIssue, groupIssues, splitMessage
+ } from './faqlogic.js';
+ 
+ // The part of Pulse that watches a community on its own.
+@@ -117,46 +117,83 @@ export async function scanFaqGaps({ key, days = 30, brief = {}, communityName =
+ /* Technical Push                                                      */
+ /* ------------------------------------------------------------------ */
+ 
+-/** Builds, stores and returns a technical report from the last `daysBack` days of chat. */
++const PLATFORM_LABEL = { telegram: 'Telegram', discord: 'Discord' };
++
++/**
++ * Builds, stores and returns a technical report from the last `daysBack` days of chat.
++ * Only messages that report something going wrong count (a failure on something technical), grouped by
++ * topic with how many different members hit it, when it started and how many a moderator has answered.
++ */
+ export async function generateTechnicalReport({ key, daysBack = 7, fallbackName = '' }) {
+-  const since = new Date(Date.now() - daysBack * 86400000).toISOString();
+-  const rows = listDiscussions({ communityKeys: new Set([key]), since, limit: 1500 });
+-  const technical = rows.filter((d) => d.kind === 'concern' || d.kind === 'question' || d.kind === 'discussion')
+-    .filter((d) => TECH_RE.test(d.text));
+-  const grouped = new Map();
+-  for (const d of technical) {
+-    const topic = (d.topics || []).find((t) => TOPICS.includes(t)) || 'other technical issue';
+-    if (!grouped.has(topic)) grouped.set(topic, []);
+-    grouped.get(topic).push(d);
+-  }
++  const now = Date.now();
++  const since = new Date(now - daysBack * 86400000).toISOString();
++  const technical = listDiscussions({ communityKeys: new Set([key]), since, limit: 5000 }).filter(isTechnicalIssue);
++  const groups = groupIssues(technical);
++  const reporterCount = new Set(technical.map((d) => d.userId || d.username || d.id)).size;
+   const communityName = technical[0]?.communityName || fallbackName || key;
+-  const context = [...grouped.entries()].map(([topic, items]) => `${topic} (${items.length} reports):\n${items.slice(0, 8).map((d) => `- [${d.platform}/${d.channelName}] ${d.text}${d.staffReplies?.length ? ` | Moderator response: ${d.staffReplies.map((r) => r.text).join(' / ')}` : ''}`).join('\n')}`).join('\n').slice(0, 10000);
++  const day = (iso) => String(iso || '').slice(0, 10);
++  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
++  const where = (d) => `${PLATFORM_LABEL[d.platform] || d.platform}${d.channelName ? ` · ${d.channelName}` : ''}`;
++  const replies = (d) => (d.staffReplies?.length ? d.staffReplies.map((r) => r.text).join(' / ') : '');
++  const headline = `${technical.length} (${plural(reporterCount, 'member')}, ${plural(groups.length, 'topic')})`;
++  const period = `last ${daysBack} days (${day(since)} to ${day(new Date(now).toISOString())})`;
++
++  const context = groups.map((g) => `${g.topic} (${plural(g.count, 'report')} from ${plural(g.reporters, 'member')}, first ${day(g.firstAt)}, last ${day(g.lastAt)}, moderators replied to ${g.answered}):\n${g.items.slice(0, 8).map((d) => `- [${where(d)}] ${d.text}${replies(d) ? ` | Moderator response: ${replies(d)}` : ''}`).join('\n')}`).join('\n').slice(0, 10000);
+ 
+   let summary = '';
+   if (aiStatus().mode !== 'none' && context) {
+-    const user = `Project/community: ${communityName}\nPeriod: last ${daysBack} days\nTotal matching reports: ${technical.length}\n${context}\nWrite: executive summary, grouped issues with counts, symptoms/evidence, moderator actions, developer investigation suggestions, unknowns.`;
++    const user = `Project/community: ${communityName}\nPeriod: ${period}\nTotal matching reports: ${headline}\n${context}\nWrite: executive summary, grouped issues with counts, symptoms/evidence, moderator actions, developer investigation suggestions, unknowns.`;
+     try {
+       summary = await complete({ system: 'You are a technical support analyst writing an evidence-led incident report for engineers. Distinguish user-reported symptoms from confirmed root causes. Do not invent logs, metrics, fixes, root causes, or figures that are not in the reports.', user, maxTokens: 900 });
+       // A report engineers will act on must not contain a number nobody reported.
+       if (unsupportedFigures(summary, [user]).length) summary = '';
+     } catch { summary = ''; }
+   }
+-  if (!summary) summary = `TECHNICAL COMMUNITY REPORT\nCommunity: ${communityName}\nPeriod: last ${daysBack} days\nTotal matching reports: ${technical.length}\n\n${[...grouped.entries()].map(([topic, items]) => `${topic.toUpperCase()} — ${items.length} report(s)\n${items.slice(0, 12).map((d) => `• ${d.text}${d.staffReplies?.length ? `\n  Moderator reply: ${d.staffReplies.map((r) => r.text).join(' / ')}` : ''}\n  Source: ${chatLink(d) || `${d.platform} · ${d.channelName || 'channel'} · ${d.createdAt}`}`).join('\n')}`).join('\n\n') || 'No matching technical reports were found in this period.'}\n\nRoot cause is not confirmed by these community reports. Developer verification is required.`;
++  if (!summary) {
++    const body = groups.map((g, i) => {
++      const lines = g.items.slice(0, 12).map((d) => `• [${where(d)}] ${d.text}${replies(d) ? `\n  Moderator reply: ${replies(d)}` : ''}\n  Source: ${chatLink(d) || `${d.platform} · ${d.channelName || 'channel'} · ${d.createdAt}`}`);
++      const more = g.items.length > 12 ? `\n  ...and ${g.items.length - 12} more report(s) on this topic.` : '';
++      return `${i + 1}. ${g.topic.toUpperCase()} - ${plural(g.count, 'report')} from ${plural(g.reporters, 'member')}\n   First reported ${day(g.firstAt)}, last ${day(g.lastAt)}. Moderators replied to ${g.answered} of ${g.count}.\n${lines.join('\n')}${more}`;
++    }).join('\n\n') || 'No matching technical reports were found in this period.';
++    summary = `TECHNICAL COMMUNITY REPORT\nCommunity: ${communityName}\nPeriod: ${period}\nTotal matching reports: ${headline}\n\n${body}\n\nRoot cause is not confirmed by these community reports. Developer verification is required.`;
++  }
+ 
+   return addTechnicalReport({
+-    id: crypto.randomUUID(), communityKey: key, communityName, periodDays: daysBack, issueCount: technical.length,
+-    groups: [...grouped.entries()].map(([topic, items]) => ({ topic, count: items.length, discussionIds: items.map((d) => d.id) })),
++    id: crypto.randomUUID(), communityKey: key, communityName, periodDays: daysBack, issueCount: technical.length, reporterCount,
++    platforms: [...new Set(technical.map((d) => d.platform))],
++    groups: groups.map((g) => ({ topic: g.topic, count: g.count, reporters: g.reporters, firstAt: g.firstAt, lastAt: g.lastAt, answered: g.answered, discussionIds: g.items.map((d) => d.id) })),
+     sourceLinks: technical.map((d) => ({ url: chatLink(d), platform: d.platform, channelName: d.channelName, text: d.text, createdAt: d.createdAt })).slice(0, 200),
+-    content: summary, createdAt: new Date().toISOString(), pushedAt: null
++    content: summary, createdAt: new Date(now).toISOString(), pushedAt: null
+   });
+ }
+ 
++// Telegram allows 4096 characters in a message and Discord 2000. A report is almost always longer, so it
++// goes out as a numbered series of messages instead of being cut off partway through.
++const CHAT_LIMIT = { telegram: 3900, discord: 1900 };
++
++/** Posts a report to the destination in settings `s`. Resolves { ok, sent, parts } and never throws. */
++export async function deliverReport(report, s) {
++  const target = platforms[s.destinationPlatform];
++  if (!target) return { ok: false, sent: 0, parts: 0 };
++  const parts = splitMessage(report.content, CHAT_LIMIT[s.destinationPlatform] || 1900);
++  let sent = 0;
++  for (const part of parts) {
++    let ok = false;
++    try { ok = await target.post(s.destinationCommunityId, s.destinationChannelId || s.destinationCommunityId, part); } catch { ok = false; }
++    if (!ok) return { ok: false, sent, parts: parts.length };
++    sent++;
++  }
++  return { ok: sent > 0, sent, parts: parts.length };
++}
++
+ const CADENCE_DAYS = { daily: 1, weekly: 7, monthly: 30 };
++const RETRY_AFTER_MS = 3 * 3600000;
+ 
+ /**
+  * Sends a report to the destination a manager chose, for every community set to automatic delivery whose
+  * cadence is due. Destination ownership is checked when the settings are saved, because there is no signed
+- * in person here. A period with no technical reports sends nothing.
++ * in person here. A period with no technical reports sends nothing. If delivery fails, the same report is
++ * tried again a few hours later rather than waiting a whole cadence or making a new report every pass.
+  */
+ export async function runTechnicalSchedules(now = Date.now()) {
+   let sent = 0;
+@@ -166,13 +203,17 @@ export async function runTechnicalSchedules(now = Date.now()) {
+     const days = CADENCE_DAYS[s.cadence] || 7;
+     if (s.lastAutoAt && now - new Date(s.lastAutoAt).getTime() < days * 86400000) continue;
+     try {
+-      const report = await generateTechnicalReport({ key, daysBack: days });
+-      await saveTechnicalSettings(key, { lastAutoAt: new Date(now).toISOString() });
+-      if (!report.issueCount) continue;
+-      const ok = await platforms[s.destinationPlatform].post(s.destinationCommunityId, s.destinationChannelId || s.destinationCommunityId, report.content.slice(0, 3900));
+-      if (!ok) { console.error(`[watch] could not deliver the technical report for ${key}`); continue; }
++      let report = s.autoPendingReportId ? listTechnicalReports(new Set([key])).find((r) => r.id === s.autoPendingReportId) : null;
++      if (!report) report = await generateTechnicalReport({ key, daysBack: days });
++      if (!report.issueCount) { await saveTechnicalSettings(key, { lastAutoAt: new Date(now).toISOString(), autoPendingReportId: '' }); continue; }
++      const out = await deliverReport(report, s);
++      if (!out.ok) {
++        console.error(`[watch] could not deliver the technical report for ${key} (${out.sent} of ${out.parts} parts sent), trying again later`);
++        await saveTechnicalSettings(key, { autoPendingReportId: report.id, lastAutoAt: new Date(now - days * 86400000 + RETRY_AFTER_MS).toISOString() });
++        continue;
++      }
+       await markTechnicalReportPushed(report.id, new Set([key]));
+-      await saveTechnicalSettings(key, { lastPushedAt: new Date().toISOString() });
++      await saveTechnicalSettings(key, { lastAutoAt: new Date(now).toISOString(), lastPushedAt: new Date().toISOString(), autoPendingReportId: '' });
+       sent++;
+     } catch (e) { console.error('[watch] technical report failed', key, e.message); }
+   }
+diff --git a/test/faqlogic.test.js b/test/faqlogic.test.js
+index b346166..1dcaee0 100644
+--- a/test/faqlogic.test.js
++++ b/test/faqlogic.test.js
+@@ -1,9 +1,10 @@
+ import { test } from 'node:test';
+ import assert from 'node:assert/strict';
+ import { readSource } from '../src/pulse/knowledge.js';
++import { analyze } from '../src/pulse/analyze.js';
+ import {
+   isCandidate, categorize, clusterQuestions, similarity, findSimilarDraft, coverage, answersFor,
+-  figuresIn, unsupportedFigures, communityContext
++  figuresIn, unsupportedFigures, communityContext, isTechnicalIssue, groupIssues, splitMessage
+ } from '../src/pulse/faqlogic.js';
+ 
+ const row = (text, extra = {}) => ({ text, kind: 'question', topics: ['staking'], createdAt: new Date().toISOString(), ...extra });
+@@ -84,3 +85,41 @@ test('an existing draft is found whatever its status', () => {
+   assert.ok(findSimilarDraft(drafts, 'telegram:-100', 'How long does unstaking usually take?'));
+   assert.equal(findSimilarDraft(drafts, 'telegram:-200', 'How long does unstaking take?'), undefined);
+ });
++
++test('a technical issue is something that broke, not a how-to question or a general worry', () => {
++  const issue = (text, topics = []) => isTechnicalIssue({ kind: 'concern', text, topics });
++  for (const t of ['My transaction fails every time I try to stake', 'The app keeps crashing on android', 'Wallet connect timed out again', 'The claim page keeps timing out for me', 'Why is my bridge transfer stuck?', 'Withdrawals are missing from my balance']) assert.ok(issue(t), t);
++  for (const t of ['How do I stake my tokens?', 'I made a mistake with my capital', "I can't wait for mainnet", 'I love the new dashboard', 'price is dumping, this is a scam']) assert.ok(!issue(t), t);
++  assert.ok(!isTechnicalIssue({ kind: 'praise', text: 'wallet works great, nothing failed' }));
++});
++
++test('messages that report a failure are kept by the chat reader, so Technical Push can see them', () => {
++  for (const t of ['My transaction fails every time I try to stake on the app', 'Getting errors when I connect my wallet to the site', 'The website is down again for me', 'Bridge crashes whenever I confirm the transfer', 'Having trouble claiming my rewards this morning', 'the claim page keeps timing out for me']) {
++    assert.equal(analyze(t)?.kind, 'concern', t);
++  }
++  assert.equal(analyze('gm everyone'), null);
++});
++
++test('issues are grouped by topic with members, dates and answered counts, biggest first', () => {
++  const g = groupIssues([
++    { userId: 'a', topics: ['wallet'], createdAt: '2026-10-10T00:00:00Z', staffReplied: true },
++    { userId: 'a', topics: ['wallet'], createdAt: '2026-10-12T00:00:00Z' },
++    { userId: 'c', topics: ['wallet'], createdAt: '2026-10-13T00:00:00Z' },
++    { userId: 'b', topics: ['bridge'], createdAt: '2026-10-11T00:00:00Z' }
++  ]);
++  assert.deepEqual(g.map((x) => [x.topic, x.count, x.reporters, x.answered]), [['wallet', 3, 2, 1], ['bridge', 1, 1, 0]]);
++  assert.equal(g[0].firstAt, '2026-10-10T00:00:00Z');
++});
++
++test('a long report is split into numbered messages that each fit, and never cut off silently', () => {
++  const long = Array.from({ length: 60 }, (_, i) => `• line ${i} ${'x'.repeat(60)}`).join('\n');
++  const parts = splitMessage(long, 1900);
++  assert.ok(parts.length > 1 && parts.every((p) => p.length <= 1900));
++  assert.match(parts[0], /^\(1\/\d+\) /);
++  assert.equal(parts.join('\n').match(/line \d+/g).length, 60, 'every line is in exactly one part');
++  const capped = splitMessage(long.repeat(5), 1900, 4);
++  assert.equal(capped.length, 4);
++  assert.match(capped.at(-1), /rest of this report is in the Sentinel dashboard/);
++  assert.deepEqual(splitMessage('short report', 1900), ['short report']);
++  assert.deepEqual(splitMessage('', 1900), []);
++});
+diff --git a/test/intelligence.test.js b/test/intelligence.test.js
+index 596de60..201a875 100644
+--- a/test/intelligence.test.js
++++ b/test/intelligence.test.js
+@@ -269,3 +269,52 @@ test('one scan covers every community the manager runs, and the list holds all o
+   const listed = await (await api('/api/pulse/faq-intelligence')).json();
+   assert.equal(listed.filter(x => x.status === 'pending').length, (await (await api('/api/pulse/faq-intelligence/summary')).json()).pending, 'the menu number is the number waiting in the list');
+ });
++
++test('Technical Push reports things that broke, counts different members, and ignores how-to questions', async () => {
++  discussion({ text: 'How do I stake my tokens on the app?', kind: 'question', topics: ['staking'], idSuffix: 'tp-howto' });
++  discussion({ text: 'The app keeps crashing whenever I open the staking page', kind: 'concern', topics: ['app'], idSuffix: 'tp-a' });
++  discussion({ text: 'Staking page crashes for me too on android', kind: 'concern', topics: ['app'], idSuffix: 'tp-b' });
++  const res = await api('/api/pulse/technical-push/telegram/-100/generate', { method: 'POST', body: { days: 7 } });
++  assert.equal(res.status, 201);
++  const report = await res.json();
++  assert.ok(!report.content.includes('How do I stake my tokens'), 'a how-to question is not an issue report');
++  assert.ok(report.content.includes('keeps crashing'));
++  const app = report.groups.find(g => g.topic === 'app');
++  assert.ok(app.count >= 2 && app.reporters >= 2, 'two different members hit the same problem');
++  assert.ok(report.reporterCount >= 2);
++  assert.match(report.content, /from \d+ members?/);
++  assert.match(report.content, /\[Telegram/, 'each report says which chat it came from');
++});
++
++test('a long technical report is delivered in numbered messages that each fit, not cut off', async () => {
++  const { platforms } = await import('../src/platform.js');
++  const posted = [];
++  platforms.telegram.post = async (...a) => { posted.push(a[2]); return true; };
++  for (let i = 0; i < 14; i++) discussion({ text: `Wallet transaction failed on the bridge, attempt ${i}. ${'detail '.repeat(60)}`, kind: 'concern', topics: ['wallet'], idSuffix: `long-${i}` });
++  assert.equal((await api('/api/pulse/technical-push/telegram/-100/settings', { method: 'POST', body: { cadence: 'weekly', delivery: 'download', destinationPlatform: 'telegram', destinationCommunityId: '-100', enabled: false } })).status, 200);
++  const report = await (await api('/api/pulse/technical-push/telegram/-100/generate', { method: 'POST', body: { days: 7 } })).json();
++  assert.ok(report.content.length > 3900, 'the report is longer than one Telegram message');
++  const pushed = await api(`/api/pulse/technical-push/${report.id}/push`, { method: 'POST', body: {} });
++  assert.equal(pushed.status, 200);
++  assert.ok(posted.length >= 2 && posted.every(p => p.length <= 3900), 'every part fits a message');
++  assert.match(posted[0], /^\(1\//);
++  assert.ok(db.listTechnicalReports(new Set([KEY])).find(r => r.id === report.id).pushedAt);
++});
++
++test('a scheduled report that fails to deliver is retried later instead of being lost or remade', async () => {
++  const { platforms } = await import('../src/platform.js');
++  const intel = await import('../src/pulse/intelligence.js');
++  await db.saveTechnicalSettings(KEY, { cadence: 'daily', delivery: 'auto', enabled: true, destinationPlatform: 'telegram', destinationCommunityId: '-100', destinationChannelId: '', lastAutoAt: '', autoPendingReportId: '' });
++  let up = false;
++  const posted = [];
++  platforms.telegram.post = async (...a) => { if (up) posted.push(a[2]); return up; };
++  assert.equal(await intel.runTechnicalSchedules(), 0, 'delivery failed');
++  const after = db.getTechnicalSettings(KEY);
++  assert.ok(after.autoPendingReportId, 'the report is remembered for a retry');
++  const count = db.listTechnicalReports(new Set([KEY])).length;
++  up = true;
++  assert.equal(await intel.runTechnicalSchedules(Date.now() + 4 * 3600000), 1, 'retried a few hours later');
++  assert.equal(db.listTechnicalReports(new Set([KEY])).length, count, 'the same report was sent, not a new one');
++  assert.ok(posted.length >= 1);
++  assert.equal(db.getTechnicalSettings(KEY).autoPendingReportId, '');
++});

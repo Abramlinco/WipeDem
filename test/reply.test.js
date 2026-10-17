@@ -1,3 +1,4 @@
+import './no-ai.js'; // must stay the first import: tests must never call a real AI model
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, checkPolicy, makeDraft, defaultBrief } from '../src/pulse/reply.js';
