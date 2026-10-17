@@ -432,7 +432,16 @@ export function addDiscussion(item) {
   db.data.discussions.unshift(record);
   if (record.messageId) msgIndex.set(msgKey(record.platform, record.communityId, record.messageId), record);
   if (db.data.discussions.length > MAX_DISCUSSIONS) {
-    for (const old of db.data.discussions.splice(MAX_DISCUSSIONS)) {
+    // Make room by dropping the oldest messages that are not concerns first. Concerns (failures, errors,
+    // complaints) are what Technical Push reports on, so a busy community's chatter must not push them out.
+    const list = db.data.discussions;
+    const dropped = [];
+    let excess = list.length - MAX_DISCUSSIONS;
+    for (let i = list.length - 1; i > 0 && excess > 0; i--) {
+      if (list[i].kind !== 'concern') { dropped.push(list.splice(i, 1)[0]); excess--; }
+    }
+    if (excess > 0) dropped.push(...list.splice(list.length - excess));
+    for (const old of dropped) {
       if (old.messageId) msgIndex.delete(msgKey(old.platform, old.communityId, old.messageId));
     }
   }
@@ -568,12 +577,15 @@ export function listFocusSettings() {
 /* ------------------------------------------------------------------ */
 
 const KNOWLEDGE_MAX_SOURCES = 30;
+// Approved FAQs live in the knowledge bank too, but they are counted apart, so approving FAQs can never
+// use up the slots a manager needs for documents and pages.
+const KNOWLEDGE_MAX_FAQS = 300;
 
 export const knowledgeSourcesFor = (key) => db.data.knowledge.sources.filter((s) => s.communityKey === key);
 
 // The list the dashboard shows. The chunks themselves are not sent to the browser.
 export function listKnowledge(key) {
-  return knowledgeSourcesFor(key).map(({ chunks, text, ...rest }) => ({ ...rest, chunkCount: chunks?.length || 0, chars: rest.chars || 0 }));
+  return knowledgeSourcesFor(key).map(({ chunks, text, search, ...rest }) => ({ ...rest, chunkCount: chunks?.length || 0, chars: rest.chars || 0 }));
 }
 
 // Everything a community's drafter may draw on, flattened for searching.
@@ -585,8 +597,16 @@ export function knowledgeChunks(key) {
   return out;
 }
 
+// When this community's facts last changed. A draft made before this moment may be out of date.
+export function knowledgeUpdatedAt(key) {
+  return knowledgeSourcesFor(key).reduce((m, s) => { const t = s.fetchedAt || s.createdAt || ''; return t > m ? t : m; }, '');
+}
+
 export async function addKnowledgeSource(key, src) {
-  if (knowledgeSourcesFor(key).length >= KNOWLEDGE_MAX_SOURCES) throw new Error(`That is the most sources allowed (${KNOWLEDGE_MAX_SOURCES})`);
+  const mine = knowledgeSourcesFor(key);
+  if (src.faqId) {
+    if (mine.filter((s) => s.faqId).length >= KNOWLEDGE_MAX_FAQS) throw new Error(`That is the most approved FAQs allowed (${KNOWLEDGE_MAX_FAQS})`);
+  } else if (mine.filter((s) => !s.faqId).length >= KNOWLEDGE_MAX_SOURCES) throw new Error(`That is the most sources allowed (${KNOWLEDGE_MAX_SOURCES})`);
   const record = { id: nanoid(10), communityKey: key, status: 'pending', error: null, chunks: [], fetchedAt: null, lastTried: null, createdAt: new Date().toISOString(), ...src };
   db.data.knowledge.sources.push(record);
   await db.write();
@@ -763,7 +783,8 @@ export function listFaqDrafts(communityKeys) {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 export async function addFaqDraft(rec) {
-  const existing = db.data.faqDrafts.find((x) => x.communityKey === rec.communityKey && x.fingerprint === rec.fingerprint && x.status !== 'dismissed');
+  // Any status counts, so a draft the manager dismissed is not raised again on the next scan.
+  const existing = db.data.faqDrafts.find((x) => x.communityKey === rec.communityKey && x.fingerprint === rec.fingerprint);
   if (existing) return existing;
   db.data.faqDrafts.unshift(rec);
   db.data.faqDrafts = db.data.faqDrafts.slice(0, 1000);
@@ -775,6 +796,10 @@ export async function updateFaqDraft(id, communityKeys, patch) {
   Object.assign(rec, patch, { updatedAt: new Date().toISOString() });
   await db.write(); return rec;
 }
+// Every community that has had a message read, for the background watcher.
+export const discussionCommunityKeys = () => [...new Set(db.data.discussions.map((d) => communityKey(d.platform, d.communityId)))];
+export const allTechnicalSettings = () => Object.entries(db.data.technicalSettings);
+
 export function getTechnicalSettings(key) {
   return db.data.technicalSettings[key] || { cadence: 'weekly', delivery: 'download', destinationPlatform: '', destinationCommunityId: '', destinationChannelId: '', enabled: false, lastPushedAt: null };
 }

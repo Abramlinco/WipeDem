@@ -2,6 +2,7 @@ import { addDiscussion, noteReply, listTrends, touchDiscussions, communityKey, k
 import { analyze } from './analyze.js';
 import { makeDraft, withinAllowance } from './reply.js';
 import { config } from '../config.js';
+import { buildContext } from './context.js';
 
 export { noteReply };
 
@@ -18,7 +19,7 @@ function autoDraft(record, settings) {
   const key = communityKey(record.platform, record.communityId);
   if (!withinAllowance(key, config.draftsPerHour)) return;
   const since = new Date(Date.now() - 4 * 86400000).toISOString();
-  makeDraft({ discussion: record, brief: settings.brief, knowledge: knowledgeChunks(key), trends: listTrends({ communityKeys: new Set([key]), since }) })
+  makeDraft({ discussion: record, brief: settings.brief, knowledge: knowledgeChunks(key), context: buildContext(key, settings.brief), trends: listTrends({ communityKeys: new Set([key]), since }) })
     .then((d) => { record.draft = { ...d, at: new Date().toISOString() }; touchDiscussions(); })
     .catch((e) => console.error('[pulse] auto draft failed', e.message));
 }

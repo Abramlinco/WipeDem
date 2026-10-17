@@ -4,6 +4,7 @@ import { flushStats, recordMemberCount } from './db.js';
 import { startDiscordBot, discordMemberCounts } from './discord/bot.js';
 import { startTelegramBot, telegramMemberCounts } from './telegram/bot.js';
 import { startFeeder } from './pulse/feeder.js';
+import { startWatcher } from './pulse/intelligence.js';
 
 const app = await createApp();
 app.listen(config.port, config.host, () => {
@@ -13,6 +14,7 @@ app.listen(config.port, config.host, () => {
 startDiscordBot();
 startTelegramBot();
 startFeeder();
+startWatcher();
 
 // Things that are fine while testing but must not be left on for real users.
 if (config.pulseCaptureStaff) console.warn('[WARNING] PULSE_CAPTURE_STAFF is on: admins and owners are being read as if they were members. Turn it off before going live.');

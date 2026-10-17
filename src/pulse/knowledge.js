@@ -121,7 +121,13 @@ export function bestSentences(text, query, max = 2) {
 export async function readSource(source, { fetcher = fetchText, now = new Date() } = {}) {
   if (source.type === 'text') {
     const text = String(source.text || '');
-    return { title: source.title, chunks: chunkText(text).map((t) => ({ text: t })), chars: text.length };
+    // `search` is optional, extra words that make a chunk findable without being part of what a reply
+    // may quote. An approved FAQ uses it for the member's question, while `text` stays the answer.
+    const search = String(source.search || '').trim();
+    // chunkText drops fragments under 20 characters, so a very short answer ("About 21 days.") keeps its own chunk.
+    const pieces = chunkText(text);
+    if (!pieces.length && text.trim()) pieces.push(text.trim());
+    return { title: source.title, chunks: pieces.map((t) => (search ? { text: t, search } : { text: t })), chars: text.length };
   }
   if (source.type === 'url') {
     const raw = await fetcher(source.url, { maxBytes: 3 * 1024 * 1024 });

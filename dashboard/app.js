@@ -60,6 +60,7 @@ async function api(path, { method = 'GET', body } = {}) {
     const err = new Error(body.error || `Request failed (${res.status})`);
     err.status = res.status;
     err.flags = body.flags;
+    err.unverified = body.unverified;
     throw err;
   }
   return res.json();
@@ -223,7 +224,7 @@ function shell(page) {
       <div class="brand">${raw(MARK)}<div><b>Sentinel</b><small>Community protection</small></div></div>
       <nav class="nav">
         ${NAV.map(([id, label, ic]) => html`${NAV_GROUP[id] ? html`<div class="navgroup">${NAV_GROUP[id]}</div>` : ''}<a data-nav="#/${id}" class="${page === id ? 'active' : ''}">${icon(ic)}${label}
-          ${(id === 'discord' || id === 'telegram') ? html`<span class="badge" data-badge="${id}" hidden></span>` : ''}
+          ${(id === 'discord' || id === 'telegram' || id === 'faqs') ? html`<span class="badge" data-badge="${id}" hidden></span>` : ''}
           ${(id === 'discord' || id === 'telegram') ? html`<button class="navplus" data-act="add-community" data-platform="${id}" title="Add ${label}" aria-label="Add ${label}">${icon('plus')}</button>` : ''}
         </a>`)}
       </nav>
@@ -261,7 +262,7 @@ async function loadPage(page, opts = {}) {
     else if (page === 'pulse') await loadPulse(sub);
     else if (page === 'campaigns') await loadCampaignPlanner();
     else if (page === 'faqs') await loadFaqIntelligence();
-    else if (page === 'technical') await loadTechnicalPush();
+    else if (page === 'technical') { techSettingsOpen = false; await loadTechnicalPush(); }
     else if (page === 'reports') await loadReports();
     else if (page === 'network') await loadNetwork();
     else if (page === 'settings') await loadSettings(sub);
@@ -276,6 +277,11 @@ async function updateBadges() {
       document.querySelectorAll(`[data-badge="${p}"]`).forEach((el) => { el.textContent = s.awaitingReview; el.hidden = !s.awaitingReview; });
     } catch { /* ignore */ }
   }
+  // FAQ drafts waiting for a manager.
+  try {
+    const f = await api('/pulse/faq-intelligence/summary');
+    document.querySelectorAll('[data-badge="faqs"]').forEach((el) => { el.textContent = f.pending; el.hidden = !f.pending; });
+  } catch { /* ignore */ }
 }
 
 const PAGE_SUB = {
@@ -744,42 +750,82 @@ async function saveSetting(method, path, body, focusId) {
 
 /* FAQs Intelligence and Technical Push */
 let faqRows = [], techRows = [];
+let faqFilter = { platform: 'all', status: 'pending' }, faqDays = 30;
+let techSettingsOpen = false, techKey = '', techDays = 7;
+// Remember whether the delivery settings are open, so a refresh does not snap them shut while you type.
+document.addEventListener('toggle', (e) => { if (e.target.matches?.('details.fold')) techSettingsOpen = e.target.open; }, true);
 function communityOptions(selected = '') {
   return state.me.communities.map(c => html`<option value="${c.key}" ${c.key === selected ? 'selected' : ''}>${c.name} · ${PLAT[c.platform]}</option>`);
 }
+// FAQs Intelligence is one place for every chat the manager runs. Each card says which platform,
+// community and channel it came from, and the tabs filter by platform and by status.
+const PLATFORM_NAME = { telegram: 'Telegram', discord: 'Discord' };
+const PLATFORM_ORDER = ['telegram', 'discord'];
+const faqPlatform = (r) => String(r.communityKey || '').split(':')[0];
+
+function faqCard(r) {
+  const plat = faqPlatform(r);
+  const where = [...new Set((r.evidence || []).map((e) => e.channelName).filter(Boolean))].slice(0, 3).join(', ');
+  return html`<div class="panel"><div class="panelhead"><h2>FAQ draft · ${r.topic} <span>${r.occurrenceCount} report(s) · ${r.status}</span></h2><span>${r.gap ? html`<span class="tag">Not in your facts</span> ` : ''}${r.category === 'technical' || r.category === 'complaint' ? html`<span class="tag">${r.category}</span>` : ''}</span></div><div class="pad"><p class="muted"><span class="tag info">${PLATFORM_NAME[plat] || plat}</span> ${r.communityName || ''}${where ? ` · ${where}` : ''}</p><p><b>Question:</b> ${r.question}</p><label class="fld"><span>Proposed answer</span><textarea data-faq-answer="${r.id}" rows="5" placeholder="Write the verified answer here">${r.answer}</textarea></label><p class="muted">${r.verificationNote||''}</p><details><summary>Evidence (${r.evidence?.length||0})</summary>${(r.evidence||[]).map(e=>html`<p class="muted">${PLATFORM_NAME[e.platform] || e.platform} · ${e.channelName}: ${e.text} ${e.url?html`<a href="${e.url}" target="_blank" rel="noopener">Open message</a>`:''}</p>`)}</details><details><summary>Sources (${r.sources?.length||0})</summary>${(r.sources||[]).map(x=>html`<p><a href="${x.url}" target="_blank" rel="noopener">${x.title}</a></p>`)}</details><div class="tools">${r.status === 'approved' ? html`<button class="btn primary" data-act="faq-approve" data-id="${r.id}">Update in Facts</button><button class="btn" data-act="faq-dismiss" data-id="${r.id}">Remove from Facts</button>` : r.status === 'dismissed' ? html`<button class="btn" data-act="faq-approve" data-id="${r.id}">Approve into Facts</button>` : html`<button class="btn primary" data-act="faq-approve" data-id="${r.id}">Approve into Facts</button><button class="btn" data-act="faq-save" data-id="${r.id}">Save edits</button><button class="btn" data-act="faq-dismiss" data-id="${r.id}">Dismiss</button>`}</div></div></div>`;
+}
+
 async function loadFaqIntelligence() {
   const cs = state.me.communities || [];
   if (!cs.length) return setPage(html`<div class="topbar"><h1>FAQs Intelligence</h1></div>${onboarding(null)}`);
-  const key = state.scope !== 'all' && cs.some(c=>c.key===state.scope) ? state.scope : cs[0].key;
-  const c = cs.find(x=>x.key===key) || cs[0];
-  faqRows = await api(`/pulse/faq-intelligence${qs({community:key})}`);
-  setPage(html`<div class="topbar"><div><h1>FAQs Intelligence</h1><div class="muted">Discover repeated questions and useful moderator answers from community conversations.</div></div><div class="tools"><select id="faq-community">${communityOptions(key)}</select><select id="faq-days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="faq-scan">Scan conversations</button></div></div>
-  <div class="panel"><div class="pad"><b>Conversation-led knowledge discovery</b><p class="muted">Sentinel compares captured questions and concerns, moderator replies, existing knowledge and configured feed stories. Draft answers are not verified facts until reviewed.</p></div></div>
-  ${faqRows.length ? faqRows.map(r=>html`<div class="panel"><div class="panelhead"><h2>FAQ draft · ${r.topic} <span>${r.occurrenceCount} report(s) · ${r.status}</span></h2></div><div class="pad"><p><b>Question:</b> ${r.question}</p><label class="fld"><span>Proposed answer</span><textarea data-faq-answer="${r.id}" rows="5">${r.answer}</textarea></label><p class="muted">${r.verificationNote||''}</p><details><summary>Evidence (${r.evidence?.length||0})</summary>${(r.evidence||[]).map(e=>html`<p class="muted">${e.platform} · ${e.channelName}: ${e.text} ${e.url?html`<a href="${e.url}" target="_blank" rel="noopener">Open message</a>`:''}</p>`)}</details><details><summary>Sources (${r.sources?.length||0})</summary>${(r.sources||[]).map(x=>html`<p><a href="${x.url}" target="_blank" rel="noopener">${x.title}</a></p>`)}</details><div class="tools"><button class="btn primary" data-act="faq-approve" data-id="${r.id}">Approve into Facts</button><button class="btn" data-act="faq-save" data-id="${r.id}">Save edits</button><button class="btn" data-act="faq-dismiss" data-id="${r.id}">Dismiss</button></div></div></div>`) : html`<div class="panel"><div class="pad empty">No drafts yet. Scan conversations to discover recurring or unanswered questions.</div></div>`}`);
+  faqRows = await api('/pulse/faq-intelligence');
+  drawFaqs();
+}
+
+function drawFaqs() {
+  const onPlatform = (r, p) => p === 'all' || faqPlatform(r) === p;
+  const shown = faqRows.filter((r) => r.status === faqFilter.status && onPlatform(r, faqFilter.platform));
+  const platforms = PLATFORM_ORDER.filter((p) => (state.me.communities || []).some((c) => c.platform === p));
+  const platformTab = (p) => html`<button class="${faqFilter.platform === p ? 'active' : ''}" data-act="faq-filter" data-kind="platform" data-value="${p}">${p === 'all' ? 'All chats' : PLATFORM_NAME[p]} (${faqRows.filter((r) => r.status === faqFilter.status && onPlatform(r, p)).length})</button>`;
+  const statusTab = (s, label) => html`<button class="${faqFilter.status === s ? 'active' : ''}" data-act="faq-filter" data-kind="status" data-value="${s}">${label} (${faqRows.filter((r) => r.status === s && onPlatform(r, faqFilter.platform)).length})</button>`;
+  const present = PLATFORM_ORDER.filter((p) => shown.some((r) => faqPlatform(r) === p));
+  const body = !faqRows.length
+    ? html`<div class="panel"><div class="pad empty">No drafts yet. Sentinel checks your conversations on its own, or press Scan all communities to check now.</div></div>`
+    : !shown.length
+      ? html`<div class="panel"><div class="pad empty">Nothing here. Try another tab.</div></div>`
+      : faqFilter.platform === 'all' && present.length > 1
+        ? present.map((p) => html`<h3 style="margin:20px 0 10px">${PLATFORM_NAME[p]} <span class="tag">${shown.filter((r) => faqPlatform(r) === p).length}</span></h3>${shown.filter((r) => faqPlatform(r) === p).map(faqCard)}`)
+        : shown.map(faqCard);
+  setPage(html`<div class="topbar"><div><h1>FAQs Intelligence</h1><div class="muted">Repeated questions, complaints and errors from all your chats, in one place.</div></div><div class="tools"><select id="faq-days"><option value="7" ${faqDays===7?'selected':''}>7 days</option><option value="30" ${faqDays===30?'selected':''}>30 days</option><option value="90" ${faqDays===90?'selected':''}>90 days</option></select><button class="btn primary" data-act="faq-scan">Scan all communities</button></div></div>
+  <div class="panel"><div class="pad"><b>Conversation-led knowledge discovery</b><p class="muted">Sentinel watches your conversations and drafts an FAQ only for the questions, complaints and errors your facts do not already cover. An answer comes from a moderator reply or from you, never from a guess, and nothing reaches your facts until you approve it.</p></div></div>
+  <div class="tabs">${platformTab('all')}${platforms.map(platformTab)}</div>
+  <div class="tabs filters">${statusTab('pending', 'Waiting for review')}${statusTab('approved', 'In your facts')}${statusTab('dismissed', 'Dismissed')}</div>
+  ${body}`);
 }
 async function loadTechnicalPush() {
   const cs = state.me.communities || [];
   if (!cs.length) return setPage(html`<div class="topbar"><h1>Technical Push</h1></div>${onboarding(null)}`);
-  const key = state.scope !== 'all' && cs.some(c=>c.key===state.scope) ? state.scope : cs[0].key;
+  const key = cs.some(c=>c.key===techKey) ? techKey : (state.scope !== 'all' && cs.some(c=>c.key===state.scope) ? state.scope : cs[0].key);
   const c = cs.find(x=>x.key===key) || cs[0];
   const data = await api(`/pulse/technical-push${qs({community:key})}`);
   techRows = data.reports.filter(r=>r.communityKey===key);
   const cfg = data.settings[key] || {};
-  setPage(html`<div class="topbar"><div><h1>Technical Push</h1><div class="muted">Aggregate reported technical issues into evidence-led developer reports.</div></div><div class="tools"><select id="tech-community">${communityOptions(key)}</select><select id="tech-days"><option value="1">24 hours</option><option value="7" selected>7 days</option><option value="30">30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="tech-generate">Generate report</button></div></div>
-  <div class="panel"><div class="panelhead"><h2>Delivery preferences <span>${c.name}</span></h2></div><div class="pad"><div class="formgrid">
+  const cadenceName = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }[cfg.cadence || 'weekly'];
+  const settingsLine = cfg.delivery === 'auto' ? `${cadenceName} · sends to ${cfg.destinationPlatform || 'a channel'}` : `${cadenceName} · manual download`;
+  setPage(html`<div class="topbar"><div><h1>Technical Push</h1><div class="muted">Aggregate reported technical issues into evidence-led developer reports.</div></div><div class="tools"><select id="tech-community" data-change="tech-community">${communityOptions(key)}</select><select id="tech-days" data-change="tech-days"><option value="1" ${techDays===1?'selected':''}>24 hours</option><option value="7" ${techDays===7?'selected':''}>7 days</option><option value="30" ${techDays===30?'selected':''}>30 days</option><option value="90" ${techDays===90?'selected':''}>90 days</option></select><button class="btn primary" data-act="tech-generate">Generate report</button></div></div>
+  <details class="panel fold" ${techSettingsOpen ? 'open' : ''}><summary><span><b>Delivery settings</b> <span class="muted">${c.name}</span></span><span class="tools"><span class="tag">${settingsLine}</span><span class="chev">▾</span></span></summary><div class="pad"><div class="formgrid">
   <label class="fld"><span>Cadence preference</span><select id="tech-cadence"><option value="daily" ${cfg.cadence==='daily'?'selected':''}>Daily</option><option value="weekly" ${(!cfg.cadence||cfg.cadence==='weekly')?'selected':''}>Weekly</option><option value="monthly" ${cfg.cadence==='monthly'?'selected':''}>Monthly</option></select></label>
   <label class="fld"><span>Delivery</span><select id="tech-delivery"><option value="download" ${cfg.delivery!=='auto'?'selected':''}>Manual download</option><option value="auto" ${cfg.delivery==='auto'?'selected':''}>Send to channel</option></select></label>
   <label class="fld"><span>Destination platform</span><select id="tech-platform"><option value="">Choose</option><option value="discord" ${cfg.destinationPlatform==='discord'?'selected':''}>Discord</option><option value="telegram" ${cfg.destinationPlatform==='telegram'?'selected':''}>Telegram</option></select></label>
   <label class="fld"><span>Destination community ID</span><input id="tech-destination" value="${cfg.destinationCommunityId||''}" placeholder="Server or chat ID"></label>
   <label class="fld"><span>Destination channel ID</span><input id="tech-channel" value="${cfg.destinationChannelId||''}" placeholder="Discord channel ID; optional for Telegram"></label>
-  </div><button class="btn primary" data-act="tech-settings" style="margin-top:12px">Save settings</button><p class="muted">This patch supports manual generation, downloads, and manager-triggered channel delivery. Saved cadence is a preference only; scheduled automatic delivery is not enabled in this first patch.</p></div></div>
-  ${techRows.length?techRows.map(r=>html`<div class="panel"><div class="panelhead"><h2>Technical report · ${dateShort(r.createdAt)} <span>${r.issueCount} issue reports · ${r.periodDays} days</span></h2><span class="tag">${r.pushedAt?'Sent':'Ready'}</span></div><div class="pad"><pre style="white-space:pre-wrap;font:inherit">${r.content}</pre><div class="tools"><button class="btn primary" data-act="tech-download" data-id="${r.id}">Download report</button><button class="btn" data-act="tech-push" data-id="${r.id}">Send to channel</button></div></div></div>`) : html`<div class="panel"><div class="pad empty">No technical reports yet. Generate a report to aggregate recent issues.</div></div>`}`);
+  </div><button class="btn primary" data-act="tech-settings" style="margin-top:12px">Save settings</button><p class="muted">Choose Send to channel and Sentinel will generate and send this report on its own at the chosen cadence. A period with no technical reports sends nothing. You can always generate and download a report yourself.</p></div></details>
+  ${techRows.length?techRows.map(r=>html`<div class="panel"><div class="panelhead"><h2>Technical report · ${dateShort(r.createdAt)} <span>${r.issueCount} issue report(s)${r.reporterCount ? ` from ${r.reporterCount} member(s)` : ''} · ${r.periodDays} days</span></h2><span class="tag">${r.pushedAt?'Sent':'Ready'}</span></div><div class="pad"><pre style="white-space:pre-wrap;font:inherit">${r.content}</pre><div class="tools"><button class="btn primary" data-act="tech-download" data-id="${r.id}">Download report</button><button class="btn" data-act="tech-push" data-id="${r.id}">Send to channel</button></div></div></div>`) : html`<div class="panel"><div class="pad empty">No technical reports yet. Generate a report to aggregate recent issues.</div></div>`}`);
 }
 async function saveFaq(id, status) {
   const answer = $(`[data-faq-answer="${id}"]`)?.value || '';
-  await api(`/pulse/faq-intelligence/${enc(id)}`, {method:'PATCH',body:{answer,status}});
-  toast(status==='approved'?'FAQ approved into Facts':status==='dismissed'?'FAQ dismissed':'FAQ saved');
-  await loadFaqIntelligence();
+  let confirmed = false;
+  for (;;) {
+    try { await api(`/pulse/faq-intelligence/${enc(id)}`, {method:'PATCH',body:{answer,status,confirmed}}); break; }
+    // A figure that is not in the chat evidence or your facts needs a person to vouch for it.
+    catch (e) { if (e.status === 409 && e.unverified && !confirmed && confirm(e.message)) { confirmed = true; continue; } throw e; }
+  }
+  toast(status==='approved'?'FAQ approved into Facts':status==='dismissed'?'FAQ dismissed and removed from Facts':'FAQ saved');
+  await loadFaqIntelligence(); updateBadges();
 }
 function downloadText(name, text) {
   const blob = new Blob([text],{type:'text/plain;charset=utf-8'}), url=URL.createObjectURL(blob);
@@ -791,25 +837,28 @@ function downloadText(name, text) {
 ===================================================================== */
 const ACTS = {
   'faq-scan': async () => {
-    const key=$('#faq-community')?.value||'', c=state.me.communities.find(x=>x.key===key); if(!c)return toast('Choose a community',true);
-    const r=await api(`/pulse/faq-intelligence/${c.platform}/${enc(c.id)}/scan`,{method:'POST',body:{days:Number($('#faq-days')?.value||30)}});
-    toast(`Scan complete: ${r.created} FAQ draft(s)`); await loadFaqIntelligence();
+    faqDays = Number($('#faq-days')?.value || 30);
+    const r=await api('/pulse/faq-intelligence/scan',{method:'POST',body:{days:faqDays}});
+    toast(`Scanned ${r.communities} communit${r.communities===1?'y':'ies'}: ${r.created} new FAQ draft(s), ${r.covered||0} already covered by your facts`); await loadFaqIntelligence(); updateBadges();
   },
+  'faq-filter': el => { faqFilter[el.dataset.kind] = el.dataset.value; drawFaqs(); },
   'faq-save': el => saveFaq(el.dataset.id,'pending'),
   'faq-approve': el => saveFaq(el.dataset.id,'approved'),
   'faq-dismiss': el => saveFaq(el.dataset.id,'dismissed'),
   'tech-generate': async () => {
     const key=$('#tech-community')?.value||'', c=state.me.communities.find(x=>x.key===key); if(!c)return toast('Choose a community',true);
-    const r=await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/generate`,{method:'POST',body:{days:Number($('#tech-days')?.value||7)}});
-    toast(`Report generated: ${r.issueCount} matching reports`); await loadTechnicalPush();
+    techKey = key; techDays = Number($('#tech-days')?.value || 7);
+    const r=await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/generate`,{method:'POST',body:{days:techDays}});
+    toast(`Report generated: ${r.issueCount} issue report(s)`); await loadTechnicalPush();
   },
   'tech-settings': async () => {
     const key=$('#tech-community')?.value||'', c=state.me.communities.find(x=>x.key===key); if(!c)return toast('Choose a community',true);
-    await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/settings`,{method:'POST',body:{cadence:$('#tech-cadence').value,delivery:$('#tech-delivery').value,destinationPlatform:$('#tech-platform').value,destinationCommunityId:$('#tech-destination').value.trim(),destinationChannelId:$('#tech-channel').value.trim(),enabled:false}});
-    toast('Settings saved'); await loadTechnicalPush();
+    techKey = key;
+    await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/settings`,{method:'POST',body:{cadence:$('#tech-cadence').value,delivery:$('#tech-delivery').value,destinationPlatform:$('#tech-platform').value,destinationCommunityId:$('#tech-destination').value.trim(),destinationChannelId:$('#tech-channel').value.trim(),enabled:$('#tech-delivery').value==='auto'}});
+    toast('Settings saved'); techSettingsOpen = true; await loadTechnicalPush();
   },
   'tech-download': el => { const r=techRows.find(x=>x.id===el.dataset.id); if(r)downloadText(`sentinel-technical-report-${r.createdAt.slice(0,10)}.txt`,r.content); },
-  'tech-push': async el => { await api(`/pulse/technical-push/${enc(el.dataset.id)}/push`,{method:'POST',body:{}}); toast('Report sent'); await loadTechnicalPush(); },
+  'tech-push': async el => { const r = await api(`/pulse/technical-push/${enc(el.dataset.id)}/push`,{method:'POST',body:{}}); toast(r.parts > 1 ? `Report sent in ${r.parts} messages` : 'Report sent'); await loadTechnicalPush(); },
   'add-community': (el, e) => { e.stopPropagation(); openAddCommunity(el.dataset.platform); },
   'tg-login': telegramLogin,
   'tg-connect': async () => { await telegramLogin(); },
@@ -844,6 +893,9 @@ const CHANGES = {
   scope: (el) => { state.scope = el.value; render(); },
   days: (el) => { state.reportDays = Number(el.value); render(); },
   'settings-community': (el) => { state.settings.id = el.value; loadSettings(state.settings.platform); },
+  // Technical Push: choosing another community shows that community's reports and settings.
+  'tech-community': (el) => { techKey = el.value; techSettingsOpen = false; loadTechnicalPush().catch(fail); },
+  'tech-days': (el) => { techDays = Number(el.value); },
   penalty: (el) => {
     const box = el.closest('.penalty');
     const mode = $('select', box).value;

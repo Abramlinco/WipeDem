@@ -3,12 +3,15 @@ import {
   listDiscussions, listTrends, setDiscussionStatus, getSettings, saveSettings, getPulseMeta, communityKey,
   getDiscussion, markReplied, touchDiscussions, listFaqDrafts, addFaqDraft, updateFaqDraft,
   getTechnicalSettings, saveTechnicalSettings, listTechnicalReports, addTechnicalReport, markTechnicalReportPushed,
-  knowledgeChunks, listKnowledge, addKnowledgeSource, getKnowledgeSource, deleteKnowledgeSource,
+  knowledgeChunks, listKnowledge, addKnowledgeSource, getKnowledgeSource, deleteKnowledgeSource, knowledgeSourcesFor, knowledgeUpdatedAt,
   listCampaigns, addCampaign, updateCampaign, deleteCampaign,
   listPoolItems, listPoolEvents, addPoolItem, getPoolItem, deletePoolItem, getXAccount, setXAccount, deleteXAccount, logPost
 } from '../db.js';
 import { platforms } from '../platform.js';
 import { makeDraft, checkPolicy, withinAllowance } from '../pulse/reply.js';
+import { buildContext } from '../pulse/context.js';
+import { scanFaqGaps, generateTechnicalReport, deliverReport, chatLink } from '../pulse/intelligence.js';
+import { unsupportedFigures, PLACEHOLDER as NO_ANSWER, NOTES } from '../pulse/faqlogic.js';
 import { applyFocus, focusKeywords, PRESETS } from '../pulse/focus.js';
 import { aiStatus, complete } from '../pulse/ai/provider.js';
 import { retrieve, bestSentences, SLUG, defiLlamaLink, LIMITS, searchProjects } from '../pulse/knowledge.js';
@@ -51,14 +54,6 @@ function guard(req, res, next) {
 
 const sinceIso = (days) => new Date(Date.now() - days * 86400000).toISOString();
 const days = (req) => toInt(req.query.days, 1, 30, 7);
-
-// A link that opens the original message in the chat app.
-function chatLink(d) {
-  if (!d.messageId) return '';
-  if (d.platform === 'discord') return `https://discord.com/channels/${d.communityId}/${d.channelId}/${d.messageId}`;
-  const id = String(d.communityId);
-  return id.startsWith('-100') ? `https://t.me/c/${id.slice(4)}/${d.messageId}` : '';
-}
 
 const present = (d) => ({
   id: d.id, platform: d.platform, communityId: d.communityId, communityName: d.communityName,
@@ -308,13 +303,15 @@ pulseRouter.post('/discussions/:id/draft', async (req, res) => {
   const settings = await getSettings(d.platform, d.communityId);
 
   // A draft was already prepared automatically. Show it, re-checked against the brief as it is now.
-  if (d.draft && !d.reply && req.body?.fresh !== true) {
+  // A draft made before the facts last changed may be out of date, so it is rebuilt instead of shown.
+  const stale = d.draft && knowledgeUpdatedAt(key) > String(d.draft.at || '');
+  if (d.draft && !d.reply && req.body?.fresh !== true && !stale) {
     const urls = (d.draft.sources || []).map((s) => s.url);
     return res.json({ ...d.draft, flags: checkPolicy(d.draft.text, settings.brief, urls), to: d.username, original: d.text, replied: false });
   }
   if (!withinAllowance(key, config.draftsPerHour)) return res.status(429).json({ error: 'Draft limit for this hour reached. Try again later.' });
   const draft = await makeDraft({
-    discussion: d, brief: settings.brief, knowledge: knowledgeChunks(key),
+    discussion: d, brief: settings.brief, knowledge: knowledgeChunks(key), context: buildContext(key, settings.brief),
     trends: listTrends({ communityKeys: new Set([key]), since: sinceIso(4) })
   });
   d.draft = { ...draft, at: new Date().toISOString() };
@@ -508,59 +505,60 @@ pulseRouter.get('/faq-intelligence', (req, res) => {
   res.json(listFaqDrafts(keys));
 });
 
+// One scan across every community the manager runs, so the FAQs page can be a single view.
+pulseRouter.post('/faq-intelligence/scan', async (req, res) => {
+  const days = toInt(req.body?.days, 1, 90, 30);
+  const total = { communities: 0, scanned: 0, created: 0, covered: 0, refreshed: 0 };
+  for (const c of req.access.communities) {
+    const settings = await getSettings(c.platform, c.id);
+    if (settings.intelEnabled === false) continue; // reading is switched off for this community
+    const r = await scanFaqGaps({ key: c.key, days, brief: settings.brief, communityName: c.name });
+    total.communities++;
+    for (const k of ['scanned', 'created', 'covered', 'refreshed']) total[k] += r[k];
+  }
+  res.json({ ...total, drafts: listFaqDrafts(req.access.keys) });
+});
+
 pulseRouter.post('/faq-intelligence/:platform/:communityId/scan', guard, async (req, res) => {
   const { platform, communityId } = req.params;
   const key = communityKey(platform, communityId);
-  const since = sinceIso(toInt(req.body?.days, 1, 90, 30));
-  const rows = listDiscussions({ communityKeys: new Set([key]), since, limit: 1500 });
-  const questions = rows.filter((d) => d.kind === 'question' || d.kind === 'concern')
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const groups = new Map();
-  for (const d of questions) {
-    const topic = (d.topics || []).find((t) => ['staking','token','bridge','wallet','fees','mainnet','support','security','app','rewards','vesting'].includes(t)) || (d.topics || [])[0] || 'general';
-    const norm = String(d.text).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
-    const fingerprint = `${topic}:${norm.split(' ').filter(w => w.length > 3).slice(0, 8).sort().join('-')}`.slice(0, 180);
-    const bucket = groups.get(topic) || [];
-    bucket.push(d); groups.set(topic, bucket);
-  }
-  const created = [];
-  const trendContext = listTrends({ communityKeys: new Set([key]), since, limit: 40 })
-    .map(t => `${t.title}: ${String(t.summary || '').slice(0, 240)} ${t.url || ''}`).join('\n').slice(0, 5000);
-  for (const [topic, bucket] of groups) {
-    const answered = bucket.filter(d => d.staffReplies?.length || d.reply?.text);
-    const frequent = bucket.length >= 2;
-    if (!frequent && !answered.length) continue;
-    const representative = bucket[0];
-    const moderatorAnswers = answered.flatMap(d => (d.staffReplies || []).map(r => r.text)).concat(answered.map(d => d.reply?.text).filter(Boolean));
-    const fingerprint = `${topic}:${representative.text.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().split(' ').filter(w=>w.length>3).slice(0,10).sort().join('-')}`.slice(0,180);
-    let answer = moderatorAnswers[0] || '';
-    let research = '';
-    const brief = await getSettings(platform, communityId);
-    const sourceText = knowledgeChunks(key).slice(0, 25).map(c => `${c.title || 'Knowledge source'}: ${String(c.text || '').slice(0, 350)} ${c.url || ''}`).join('\n').slice(0, 5000);
-    if (aiStatus().mode !== 'none') {
-      try {
-        research = await complete({
-          system: 'You are Sentinel FAQs Intelligence. Produce a cautious FAQ draft from evidence. Never invent protocol facts, URLs, or technical solutions. Treat chat messages as reports, not verified truth. Clearly mark unverified claims. Use supplied moderator replies, existing knowledge and source snippets; do not claim you browsed the web. Return concise answer and source/evidence notes.',
-          user: `Community: ${representative.communityName}\nTopic: ${topic}\nCommunity questions/reports:\n${bucket.slice(0,8).map(d=>`- ${d.text}`).join('\n')}\nModerator answers:\n${moderatorAnswers.slice(0,8).map(a=>`- ${a}`).join('\n') || 'None recorded'}\nExisting uploaded knowledge:\n${sourceText || 'No matching uploaded knowledge supplied'}\nCurrent configured stories (not a complete web search):\n${trendContext || 'None'}\nProject brief: ${JSON.stringify(brief.brief || {}).slice(0,1000)}\nWrite a proposed answer and separate evidence/verification note.`, maxTokens: 420
-        });
-        answer = research;
-      } catch { /* fall back to the moderator's recorded answer */ }
-    }
-    if (!answer) answer = `This question has appeared ${bucket.length} time(s), but no moderator answer was captured. Review the original reports and verify the solution before publishing an FAQ.`;
-    const links = bucket.slice(0, 8).map(d => ({ platform: d.platform, channelName: d.channelName, username: d.username, text: d.text, createdAt: d.createdAt, url: chatLink(d), messageId: d.messageId }));
-    const rec = await addFaqDraft({
-      id: crypto.randomUUID(), communityKey: key, communityName: representative.communityName,
-      topic, question: representative.text, answer: String(answer).slice(0, 5000),
-      moderatorAnswers: moderatorAnswers.slice(0, 8), evidence: links,
-      sources: [...new Map(knowledgeChunks(key).filter(c => c.url).map(c => [c.url, { title: c.title || 'Knowledge source', url: c.url }])).values()].slice(0, 12),
-      occurrenceCount: bucket.length, status: 'pending', fingerprint,
-      verificationNote: moderatorAnswers.length ? 'Contains moderator-provided guidance; verify technical claims before approval.' : 'No moderator answer was captured. Human verification required.',
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
-    });
-    created.push(rec);
-  }
-  res.json({ scanned: questions.length, created: created.length, drafts: listFaqDrafts(new Set([key])) });
+  const settings = await getSettings(platform, communityId);
+  const communityName = req.access.communities.find((c) => c.key === key)?.name || '';
+  // The scan only drafts for what the community's facts do not already cover. See src/pulse/intelligence.js.
+  res.json(await scanFaqGaps({ key, days: toInt(req.body?.days, 1, 90, 30), brief: settings.brief, communityName }));
 });
+
+// How many drafts are waiting for a manager, for the number on the menu.
+pulseRouter.get('/faq-intelligence/summary', (req, res) => {
+  const pending = listFaqDrafts(scopeKeys(req)).filter((x) => x.status === 'pending');
+  const byCommunity = {};
+  for (const x of pending) byCommunity[x.communityKey] = (byCommunity[x.communityKey] || 0) + 1;
+  res.json({ pending: pending.length, byCommunity });
+});
+
+const faqTitle = (q) => `FAQs Intelligence: ${String(q).slice(0, 70)}`;
+
+// What an FAQ answer is checked against: what members and moderators actually said, plus what the facts already say.
+const faqEvidence = (rec) => [
+  rec.question, ...(rec.moderatorAnswers || []), ...(rec.evidence || []).map((e) => e.text),
+  ...retrieve(knowledgeChunks(rec.communityKey), rec.question, { k: 3 }).map((k) => k.text)
+];
+
+// Keeps the knowledge bank in step with an FAQ: an approved FAQ is indexed, anything else is taken out.
+// The new copy is added before the old one is removed, so a failure never leaves the bank without it.
+// The indexed text is the approved answer only. The question goes in `search`, which retrieval matches
+// but never quotes, and the internal verification note stays on the FAQ record.
+async function syncFaqKnowledge(rec) {
+  const keys = new Set([rec.communityKey]);
+  const title = faqTitle(rec.question);
+  const answer = String(rec.answer || '').trim();
+  const mine = knowledgeSourcesFor(rec.communityKey).filter((s) => s.faqId === rec.id || (!s.faqId && s.title === title));
+  if (rec.status !== 'approved' || !answer) { for (const s of mine) await deleteKnowledgeSource(s.id, keys); return; }
+  if (mine.length === 1 && mine[0].faqId === rec.id && mine[0].text === answer && mine[0].search === rec.question && mine[0].title === title) return;
+  const src = await addKnowledgeSource(rec.communityKey, { type: 'text', title, text: answer, search: rec.question, faqId: rec.id, url: '', refreshHours: 0 });
+  await refreshKnowledgeSource(src);
+  for (const s of mine) await deleteKnowledgeSource(s.id, keys);
+}
 
 pulseRouter.patch('/faq-intelligence/:id', async (req, res) => {
   const patch = {};
@@ -568,23 +566,31 @@ pulseRouter.patch('/faq-intelligence/:id', async (req, res) => {
     if (typeof req.body?.[k] === 'string') patch[k] = req.body[k].slice(0, k === 'answer' ? 5000 : 1200);
   }
   if (patch.status && !['pending','approved','dismissed'].includes(patch.status)) return res.status(400).json({ error: 'Unknown FAQ status.' });
-  const rec = await updateFaqDraft(req.params.id, req.access.keys, patch);
-  if (!rec) return res.status(404).json({ error: 'FAQ draft not found.' });
-  // Approval makes the answer reusable by the existing reply drafter.
-  if (patch.status === 'approved') {
-    const title = `FAQs Intelligence: ${String(rec.question).slice(0, 70)}`;
-    const exists = listKnowledge(rec.communityKey).some(s => s.title === title);
-    if (!exists) {
-      // Keep the reusable answer at the start of the indexed text. If the
-      // question is indexed as the first sentence, retrieval can quote the
-      // question back instead of the approved answer. The question remains
-      // in the source title for matching and traceability.
-      const text = `${rec.answer}\n\nVerification note: ${rec.verificationNote || ''}`;
-      const src = await addKnowledgeSource(rec.communityKey, { type: 'text', title, text, url: '', refreshHours: 0 });
-      // A text knowledge source is indexed by the existing knowledge refresher.
-      await refreshKnowledgeSource(src);
-    }
+  const current = listFaqDrafts(req.access.keys).find((x) => x.id === req.params.id);
+  if (!current) return res.status(404).json({ error: 'FAQ draft not found.' });
+  // Whoever changes the answer becomes its author, so it is no longer "taken from a moderator reply".
+  if (typeof patch.answer === 'string' && patch.answer.trim() !== String(current.answer || '').trim()) {
+    patch.answer = patch.answer.trim();
+    patch.basis = 'manager';
+    patch.verificationNote = NOTES.manager;
   }
+  const next = { ...current, ...patch };
+  if (next.status === 'approved') {
+    const answer = String(next.answer || '').trim();
+    if (answer.length < 10 || NO_ANSWER.test(answer)) return res.status(400).json({ error: 'Write the verified answer first. An FAQ without a real answer cannot go into your facts.' });
+    // A figure that appears nowhere in the chat or the facts has to be confirmed by a person. An answer the manager wrote is theirs to vouch for.
+    if (next.basis !== 'manager') {
+      const unverified = unsupportedFigures(answer, faqEvidence(next));
+      if (unverified.length && req.body?.confirmed !== true) {
+        return res.status(409).json({ error: `These figures are not in the chat evidence or your facts: ${unverified.join(', ')}. Check them, then confirm.`, unverified });
+      }
+    }
+    // Indexed first, so a failure here leaves the FAQ pending instead of "approved" but missing from the facts.
+    try { await syncFaqKnowledge(next); } catch (e) { return res.status(409).json({ error: e.message }); }
+  }
+  const rec = await updateFaqDraft(req.params.id, req.access.keys, patch);
+  // Dismissed or sent back to pending: take it out of the facts, so a retracted answer can never be drafted from.
+  if (next.status !== 'approved') await syncFaqKnowledge(rec);
   res.json(rec);
 });
 
@@ -605,6 +611,8 @@ pulseRouter.post('/technical-push/:platform/:communityId/settings', guard, async
   const destinationCommunityId = String(b.destinationCommunityId || '').slice(0, 80);
   const destinationChannelId = String(b.destinationChannelId || '').slice(0, 100);
   if (delivery === 'auto' && (!destinationPlatform || !destinationCommunityId)) return res.status(400).json({ error: 'Choose a destination community for automatic delivery.' });
+  // Automatic delivery runs with nobody signed in, so who may be posted to is decided here, once.
+  if (delivery === 'auto' && !req.access.keys.has(communityKey(destinationPlatform, destinationCommunityId))) return res.status(403).json({ error: 'You do not manage that destination community.' });
   const saved = await saveTechnicalSettings(key, { cadence, delivery, destinationPlatform, destinationCommunityId, destinationChannelId, enabled: b.enabled === true });
   res.json(saved);
 });
@@ -612,25 +620,9 @@ pulseRouter.post('/technical-push/:platform/:communityId/settings', guard, async
 pulseRouter.post('/technical-push/:platform/:communityId/generate', guard, async (req, res) => {
   const { platform, communityId } = req.params;
   const key = communityKey(platform, communityId);
-  const daysBack = toInt(req.body?.days, 1, 90, 7);
-  const since = sinceIso(daysBack);
-  const rows = listDiscussions({ communityKeys: new Set([key]), since, limit: 1500 });
-  const technical = rows.filter(d => d.kind === 'concern' || d.kind === 'question' || d.kind === 'discussion')
-    .filter(d => /error|fail|bug|broken|stuck|not working|can't|cannot|unable|transaction|migrat|wallet|connect|bridge|claim|stake|unstake|gas|rpc|api|revert|pending|balance|technical|issue|problem|crash|timeout|exploit/i.test(d.text));
-  const grouped = new Map();
-  for (const d of technical) {
-    const topic = (d.topics || []).find(t => ['staking','token','bridge','wallet','fees','mainnet','support','security','app','rewards','vesting'].includes(t)) || 'other technical issue';
-    if (!grouped.has(topic)) grouped.set(topic, []);
-    grouped.get(topic).push(d);
-  }
-  const communityName = technical[0]?.communityName || req.access.communities.find(c => c.key === key)?.name || key;
-  let summary = '';
-  const context = [...grouped.entries()].map(([topic, items]) => `${topic} (${items.length} reports):\n${items.slice(0,8).map(d=>`- [${d.platform}/${d.channelName}] ${d.text}${d.staffReplies?.length ? ` | Moderator response: ${d.staffReplies.map(r=>r.text).join(' / ')}` : ''}`).join('\n')}`).join('\n').slice(0, 10000);
-  if (aiStatus().mode !== 'none' && context) {
-    try { summary = await complete({ system: 'You are a technical support analyst writing an evidence-led incident report for engineers. Distinguish user-reported symptoms from confirmed root causes. Do not invent logs, metrics, fixes, or root causes. Group related reports and list practical investigation steps.', user: `Project/community: ${communityName}\nPeriod: last ${daysBack} days\n${context}\nWrite: executive summary, grouped issues with counts, symptoms/evidence, moderator actions, developer investigation suggestions, unknowns.`, maxTokens: 900 }); } catch {}
-  }
-  if (!summary) summary = `TECHNICAL COMMUNITY REPORT\nCommunity: ${communityName}\nPeriod: last ${daysBack} days\nTotal matching reports: ${technical.length}\n\n${[...grouped.entries()].map(([topic, items]) => `${topic.toUpperCase()} — ${items.length} report(s)\n${items.slice(0,12).map(d=>`• ${d.text}${d.staffReplies?.length ? `\n  Moderator reply: ${d.staffReplies.map(r=>r.text).join(' / ')}` : ''}\n  Source: ${chatLink(d) || `${d.platform} · ${d.channelName || 'channel'} · ${d.createdAt}`}`).join('\n')}`).join('\n\n') || 'No matching technical reports were found in this period.'}\n\nRoot cause is not confirmed by these community reports. Developer verification is required.`;
-  const report = await addTechnicalReport({ id: crypto.randomUUID(), communityKey: key, communityName, periodDays: daysBack, issueCount: technical.length, groups: [...grouped.entries()].map(([topic, items]) => ({ topic, count: items.length, discussionIds: items.map(d=>d.id) })), sourceLinks: technical.map(d=>({ url: chatLink(d), platform:d.platform, channelName:d.channelName, text:d.text, createdAt:d.createdAt })).slice(0,200), content: summary, createdAt: new Date().toISOString(), pushedAt: null });
+  const report = await generateTechnicalReport({
+    key, daysBack: toInt(req.body?.days, 1, 90, 7), fallbackName: req.access.communities.find((c) => c.key === key)?.name || ''
+  });
   res.status(201).json(report);
 });
 
@@ -642,10 +634,11 @@ pulseRouter.post('/technical-push/:id/push', async (req, res) => {
   if (!settings.destinationPlatform || !settings.destinationCommunityId) return res.status(400).json({ error: 'Configure a destination community in Technical Push settings first.' });
   const targetKey = communityKey(settings.destinationPlatform, settings.destinationCommunityId);
   if (!req.access.keys.has(targetKey)) return res.status(403).json({ error: 'You do not manage the configured destination community.' });
-  const ok = await platforms[settings.destinationPlatform].post(settings.destinationCommunityId, settings.destinationChannelId || settings.destinationCommunityId, report.content.slice(0, 3900));
-  if (!ok) return res.status(502).json({ error: 'Could not deliver the report to the configured channel.' });
+  // A long report goes out as a numbered series of messages, so nothing is cut off.
+  const out = await deliverReport(report, settings);
+  if (!out.ok) return res.status(502).json({ error: out.sent ? `Only ${out.sent} of ${out.parts} parts reached the channel. Check the bot can post there, then send again.` : 'Could not deliver the report to the configured channel.' });
   await markTechnicalReportPushed(report.id, req.access.keys);
-  res.json({ ok: true });
+  res.json({ ok: true, parts: out.parts });
 });
 
 /* ---------- X ---------- */
