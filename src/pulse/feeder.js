@@ -159,10 +159,14 @@ export async function refreshPoolItem(item, { fetcher } = {}) {
 }
 
 export async function refreshPoolsDue() {
-  let done = 0;
+  // fix-3: report what really happened. Only pools that were read successfully count as "checked";
+  // failures are printed with the reason instead of being hidden behind a success count.
+  let done = 0; const failed = [];
   for (const p of duePools(Date.now(), config.poolRefreshMinutes)) {
-    await refreshPoolItem(p); done++;
-    await new Promise((r) => setTimeout(r, 400)); // gentle with the data service
+    const r = await refreshPoolItem(p);
+    if (r.ok) done++; else if (r.error !== 'Already being checked') failed.push(`${p.label || `${p.chain || ''}:${p.address || ''}`} - ${r.error}`);
+    await new Promise((resolve) => setTimeout(resolve, 400)); // gentle with the data service
   }
+  if (failed.length) console.error(`[pulse] ${failed.length} pool(s) could not be read:\n  ${failed.join('\n  ')}`);
   return done;
 }

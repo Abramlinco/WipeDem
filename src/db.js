@@ -34,6 +34,7 @@ const defaultData = {
   knowledge: { sources: [] }, // Pulse: documents, pages and live data each community lets the drafter use
   pools: { items: [], events: [] }, // Pulse: pools each community watches, and what changed in them
   xAccounts: {},   // Pulse: encrypted X keys/tokens per community. Kept apart from settings so they can never be sent to the browser.
+  campaignChats: {}, // Campaign Planner chats, one per manager per community (campaign-fix-2)
   campaigns: [],    // Pulse: manager-created campaign plans, scoped to a community
   postLog: [],      // Pulse: who posted what, where
   faqDrafts: [],    // FAQs Intelligence: community-derived FAQ drafts awaiting manager review
@@ -769,6 +770,27 @@ export async function updateCampaign(id, communityKeys, patch) {
   if (!c) return null;
   Object.assign(c, patch, { updatedAt: new Date().toISOString() }); await db.write(); return c;
 }
+// campaign-fix-2: Campaign Planner conversations live on the server so they follow the manager across devices.
+const chatKey = (owner, community) => `${owner}|${community}`;
+export function getCampaignChat(owner, community) {
+  return db.data.campaignChats[chatKey(owner, community)] || { messages: [], updatedAt: null };
+}
+export async function appendCampaignChat(owner, community, msgs) {
+  const k = chatKey(owner, community);
+  const chat = db.data.campaignChats[k] || { messages: [], updatedAt: null };
+  chat.messages = [...chat.messages, ...msgs].slice(-60);
+  chat.updatedAt = new Date().toISOString();
+  db.data.campaignChats[k] = chat;
+  const keys = Object.keys(db.data.campaignChats);
+  if (keys.length > 500) {
+    keys.sort((a, b) => String(db.data.campaignChats[a].updatedAt).localeCompare(String(db.data.campaignChats[b].updatedAt)));
+    for (const old of keys.slice(0, keys.length - 500)) delete db.data.campaignChats[old];
+  }
+  await db.write(); return chat;
+}
+export async function clearCampaignChat(owner, community) {
+  delete db.data.campaignChats[chatKey(owner, community)]; await db.write();
+}
 export async function deleteCampaign(id, communityKeys) {
   const n = db.data.campaigns.length; db.data.campaigns = db.data.campaigns.filter((x) => !(x.id === id && communityKeys.has(x.communityKey)));
   if (db.data.campaigns.length === n) return false; await db.write(); return true;
@@ -815,6 +837,15 @@ export async function addTechnicalReport(rec) {
   db.data.technicalReports.unshift(rec);
   db.data.technicalReports = db.data.technicalReports.slice(0, 500);
   await db.write(); return rec;
+}
+// fix-3: deleting a report removes the whole record (text, evidence links, groups) and any pending auto-send pointing at it.
+export async function deleteTechnicalReport(id, communityKeys) {
+  const rec = db.data.technicalReports.find((x) => x.id === id && communityKeys.has(x.communityKey));
+  if (!rec) return false;
+  db.data.technicalReports = db.data.technicalReports.filter((x) => x !== rec);
+  const s = db.data.technicalSettings[rec.communityKey];
+  if (s && s.autoPendingReportId === id) s.autoPendingReportId = '';
+  await db.write(); return true;
 }
 export async function markTechnicalReportPushed(id, communityKeys) {
   const rec = db.data.technicalReports.find((x) => x.id === id && communityKeys.has(x.communityKey));

@@ -113,7 +113,11 @@ export async function fetchText(url, { headers = {}, timeoutMs = 12000, maxBytes
         current = new URL(res.headers.get('location'), current).toString();
         continue;
       }
-      if (!res.ok) { const err = new Error(`The address answered ${res.status}`); err.status = res.status; throw err; }
+      if (!res.ok) {
+        const err = new Error(`The address answered ${res.status}`); err.status = res.status;
+        try { err.body = (await res.text()).slice(0, 300); } catch { /* the body is optional */ } // fix-3
+        throw err;
+      }
       const buf = Buffer.from(await res.arrayBuffer());
       if (buf.length > maxBytes) throw new Error('That page or feed is too large');
       return buf.toString('utf8');

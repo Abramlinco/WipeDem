@@ -158,23 +158,33 @@ function render() {
   window.Guide?.afterRender?.(page);
 }
 
+// fix-4: landing page
 let loginTimer;
 function renderLogin() {
   clearInterval(loginTimer);
   $('#drawer-root').innerHTML = '';
   $('#app').innerHTML = html`<div class="login">
     <section class="login-brand">
-      <div class="brand">${raw(MARK)}<div><b>Sentinel</b><small>Community protection</small></div></div>
+      <div class="brand">${raw(MARK)}<div><b>Sentinel</b><small>Intelligent Community Pioneer</small></div></div>
       <div class="login-hero">
-        <svg class="bigpulse" viewBox="0 0 480 120" aria-hidden="true"><path class="base" d="M0 60H480"/><path class="beat" pathLength="640" d="M0 60H150L175 60L200 14L238 104L262 60H480"/></svg>
-        <h1>Keep scammers out. Hear what your community is really saying.</h1>
-        <ul class="points">
-          <li><span class="pi">${icon('shield')}</span><div><b>Protection that asks first</b><span>Catches fake admins, scam links and raid bots in Discord and Telegram. Nobody is banned without your decision.</span></div></li>
-          <li><span class="pi">${icon('listen')}</span><div><b>Ideas, questions and concerns</b><span>Turns busy chats into a short list you can act on, next to what is trending in crypto.</span></div></li>
-          <li><span class="pi">${icon('reply')}</span><div><b>Replies you approve</b><span>Drafts answers from your own docs and live data. Nothing is posted until you press send.</span></div></li>
-        </ul>
+        <h1>Protect your community. Understand it. Grow it.</h1>
+        <p class="lead">One workspace for Web3 community teams.</p>
+        <div class="lp-card" role="img" aria-label="Example of the Pulse screen">
+          <div class="lp-head"><span class="lp-title">${icon('pulse')}Pulse</span><span class="lp-sample">Example</span></div>
+          <svg class="bigpulse lp-line" viewBox="0 0 480 60" preserveAspectRatio="none" aria-hidden="true"><path class="base" d="M0 30H480"/><path class="beat" pathLength="640" d="M0 30H150L175 30L200 6L238 54L262 30H480"/></svg>
+          <ul class="lp-rows">
+            <li><span class="lp-tag q">Question</span><span>14 members asked how to bridge</span></li>
+            <li><span class="lp-tag c">Concern</span><span>Withdrawals feel slow today</span></li>
+            <li><span class="lp-tag i">Idea</span><span>A weekly quiz night</span></li>
+          </ul>
+        </div>
+        <div class="lp-tiles">
+          <div class="lp-tile"><span class="pi">${icon('shield')}</span><b>Protection</b><span class="d">Scam links and fake admins, flagged.</span></div>
+          <div class="lp-tile"><span class="pi">${icon('campaigns')}</span><b>Campaigns</b><span class="d">Ideas that fit your community.</span></div>
+          <div class="lp-tile"><span class="pi">${icon('faqs')}</span><b>Support</b><span class="d">Repeated questions and bugs, sorted.</span></div>
+        </div>
       </div>
-      <p class="foot">Built for Discord and Telegram community teams.</p>
+      <p class="foot">Built for Web3 community teams on Discord and Telegram.</p>
     </section>
     <section class="login-card"><div class="box">
       <h2>Sign in</h2>
@@ -186,6 +196,7 @@ function renderLogin() {
         ? html`<button class="btn telegram" data-act="tg-login">${icon('telegram')}Continue with Telegram</button>`
         : html`<button class="btn" disabled>Telegram bot is not running</button>`}
       <div id="tg-wait"></div>
+      <div class="trust">${icon('shield')}<span>Nothing is banned, posted or sent unless you approve it or switch it on.</span></div>
       <p class="note muted">Signing in never gives Sentinel your password. Discord shows you what is shared. Telegram confirms who you are through the bot.</p>
     </div></section>
   </div>`.s;
@@ -221,7 +232,7 @@ function shell(page) {
   ];
   return html`<div class="shell">
     <aside class="rail">
-      <div class="brand">${raw(MARK)}<div><b>Sentinel</b><small>Community protection</small></div></div>
+      <div class="brand">${raw(MARK)}<div><b>Sentinel</b><small>Intelligent Community Pioneer</small></div></div>
       <nav class="nav">
         ${NAV.map(([id, label, ic]) => html`${NAV_GROUP[id] ? html`<div class="navgroup">${NAV_GROUP[id]}</div>` : ''}<a data-nav="#/${id}" class="${page === id ? 'active' : ''}">${icon(ic)}${label}
           ${(id === 'discord' || id === 'telegram' || id === 'faqs') ? html`<span class="badge" data-badge="${id}" hidden></span>` : ''}
@@ -796,6 +807,19 @@ function drawFaqs() {
   <div class="tabs filters">${statusTab('pending', 'Waiting for review')}${statusTab('approved', 'In your facts')}${statusTab('dismissed', 'Dismissed')}</div>
   ${body}`);
 }
+// fix-3: compact technical report card
+function techCard(r) {
+  const full = String(r.content || '');
+  const parts = full.split(/\n\s*\n/);
+  const headLines = (parts[0] || '').split('\n');
+  const title = headLines.shift() || '';
+  const facts = headLines.map((l) => { const i = l.indexOf(':'); return i > 0 && i < 40 ? [l.slice(0, i).trim(), l.slice(i + 1).trim()] : null; });
+  const structured = /^[A-Z ]{8,}$/.test(title.trim()) && facts.length >= 2 && facts.every(Boolean);
+  const rest = structured ? parts.slice(1).join('\n\n') : full;
+  const text = html`<div class="tp-text">${rest}</div>`;
+  const meta = [`${r.issueCount} issue report${r.issueCount === 1 ? '' : 's'}`, r.reporterCount ? `${r.reporterCount} member${r.reporterCount === 1 ? '' : 's'}` : '', `${r.periodDays} days`].filter(Boolean).join(' · ');
+  return html`<div class="panel tp-card"><div class="tp-head"><div><div class="tp-title">Technical report · ${dateShort(r.createdAt)}</div><div class="tp-meta">${meta}</div></div><span class="tag ${r.pushedAt ? 'ok' : 'info'}">${r.pushedAt ? 'Sent' : 'Ready'}</span></div>${structured ? html`<dl class="tp-facts">${facts.map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl>` : ''}${rest.length > 650 ? html`<details class="tp-more"><summary>View full report</summary>${text}</details>` : (rest.trim() ? text : '')}<div class="tp-actions"><button class="btn primary" data-act="tech-download" data-id="${r.id}">Download</button><button class="btn" data-act="tech-push" data-id="${r.id}">Send to channel</button><span class="tp-spacer"></span><button class="btn ban" data-act="tech-delete" data-id="${r.id}">Delete</button></div></div>`;
+}
 async function loadTechnicalPush() {
   const cs = state.me.communities || [];
   if (!cs.length) return setPage(html`<div class="topbar"><h1>Technical Push</h1></div>${onboarding(null)}`);
@@ -814,7 +838,7 @@ async function loadTechnicalPush() {
   <label class="fld"><span>Destination community ID</span><input id="tech-destination" value="${cfg.destinationCommunityId||''}" placeholder="Server or chat ID"></label>
   <label class="fld"><span>Destination channel ID</span><input id="tech-channel" value="${cfg.destinationChannelId||''}" placeholder="Discord channel ID; optional for Telegram"></label>
   </div><button class="btn primary" data-act="tech-settings" style="margin-top:12px">Save settings</button><p class="muted">Choose Send to channel and Sentinel will generate and send this report on its own at the chosen cadence. A period with no technical reports sends nothing. You can always generate and download a report yourself.</p></div></details>
-  ${techRows.length?techRows.map(r=>html`<div class="panel"><div class="panelhead"><h2>Technical report · ${dateShort(r.createdAt)} <span>${r.issueCount} issue report(s)${r.reporterCount ? ` from ${r.reporterCount} member(s)` : ''} · ${r.periodDays} days</span></h2><span class="tag">${r.pushedAt?'Sent':'Ready'}</span></div><div class="pad"><pre style="white-space:pre-wrap;font:inherit">${r.content}</pre><div class="tools"><button class="btn primary" data-act="tech-download" data-id="${r.id}">Download report</button><button class="btn" data-act="tech-push" data-id="${r.id}">Send to channel</button></div></div></div>`) : html`<div class="panel"><div class="pad empty">No technical reports yet. Generate a report to aggregate recent issues.</div></div>`}`);
+  ${techRows.length?techRows.map(techCard) : html`<div class="panel"><div class="pad empty">No technical reports yet. Generate a report to aggregate recent issues.</div></div>`}`);
 }
 async function saveFaq(id, status) {
   const answer = $(`[data-faq-answer="${id}"]`)?.value || '';
@@ -856,6 +880,12 @@ const ACTS = {
     techKey = key;
     await api(`/pulse/technical-push/${c.platform}/${enc(c.id)}/settings`,{method:'POST',body:{cadence:$('#tech-cadence').value,delivery:$('#tech-delivery').value,destinationPlatform:$('#tech-platform').value,destinationCommunityId:$('#tech-destination').value.trim(),destinationChannelId:$('#tech-channel').value.trim(),enabled:$('#tech-delivery').value==='auto'}});
     toast('Settings saved'); techSettingsOpen = true; await loadTechnicalPush();
+  },
+  'tech-delete': async el => {
+    const r = techRows.find(x => x.id === el.dataset.id); if (!r) return;
+    if (!confirm(`Delete the report from ${dateShort(r.createdAt)}? This permanently removes it, including its evidence links, and cannot be undone.`)) return;
+    await api(`/pulse/technical-push/${enc(r.id)}`, { method: 'DELETE' });
+    toast('Report deleted'); await loadTechnicalPush();
   },
   'tech-download': el => { const r=techRows.find(x=>x.id===el.dataset.id); if(r)downloadText(`sentinel-technical-report-${r.createdAt.slice(0,10)}.txt`,r.content); },
   'tech-push': async el => { const r = await api(`/pulse/technical-push/${enc(el.dataset.id)}/push`,{method:'POST',body:{}}); toast(r.parts > 1 ? `Report sent in ${r.parts} messages` : 'Report sent'); await loadTechnicalPush(); },

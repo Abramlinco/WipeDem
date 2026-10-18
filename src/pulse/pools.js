@@ -124,6 +124,10 @@ function friendly(e, what) {
   if (e.status === 404) return new Error(`${what} was not found. Check the chain and address.`);
   if (e.status === 429) return new Error('The data service says too many requests. Wait before retrying; the pool may still be valid.');
   if (e.status === 401 || e.status === 403) return new Error('The data service refused the request. It may need a paid plan.');
+  // fix-3: say what actually happened instead of a bare "The address answered 400".
+  const detail = e.body ? ` (${String(e.body).replace(/\s+/g, ' ').trim().slice(0, 140)})` : '';
+  if (e.status === 400) return new Error(`The data service rejected this lookup (HTTP 400)${detail}. That can mean it does not recognise this chain or pool address. Try pasting the pool's DEX Screener link (dexscreener.com/<chain>/<pool>) instead.`);
+  if (e.status) return new Error(`The data service answered HTTP ${e.status}${detail}. Try again later.`);
   return e;
 }
 

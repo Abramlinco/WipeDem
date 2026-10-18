@@ -49,7 +49,7 @@ async function loadPulse(sub) {
       <select data-pulse-change="days" aria-label="Time range">
         ${[[1, 'Last 24 hours'], [7, 'Last 7 days'], [14, 'Last 14 days'], [30, 'Last 30 days']].map(([n, l]) => html`<option value="${n}" ${pulseState.days === n ? 'selected' : ''}>${l}</option>`)}
       </select></div></div>
-    <div class="tabs">${tabBtn('ideas', 'Ideas')}${tabBtn('trends', 'Market trends')}${tabBtn('pools', 'Pools')}${tabBtn('playbook', 'Campaigns')}${tabBtn('setup', 'Setup')}</div>`;
+    <div class="tabs">${tabBtn('ideas', 'Ideas')}${tabBtn('trends', 'Market trends')}${tabBtn('pools', 'Pools')}${tabBtn('playbook', 'Playbook')}${tabBtn('setup', 'Setup')}</div>`;
   const body = tab === 'ideas' ? await pulseIdeas(community)
     : tab === 'trends' ? await pulseTrends(community)
     : tab === 'pools' ? await pulsePools(community)
@@ -184,16 +184,15 @@ async function pulseTrends(community) {
 const P_PRI = { high: 'bad', medium: 'net', low: '' };
 
 async function pulsePlaybook(community) {
-  const [pb, campaigns] = await Promise.all([api(`/pulse/playbook${qs({ community, days: pulseState.days })}`), api(`/pulse/campaigns${qs({ community })}`)]);
-  pulseState.campaigns = campaigns;
+  const pb = await api(`/pulse/playbook${qs({ community, days: pulseState.days })}`);
   if (!pb.items.length) {
-    return html`<div class="panel"><h2>Campaign planner</h2><div class="pad"><button class="btn" data-pulse="campaign-template" data-type="Zealy-style quest">Zealy-style quest</button> <button class="btn" data-pulse="campaign-template" data-type="Community quiz">Quiz</button> <button class="btn" data-pulse="campaign-template" data-type="Community poll">Poll</button> <button class="btn" data-pulse="campaign-template" data-type="Web3 trend discussion">Web3 trend</button>${pulseState.campaigns?.length ? pulseState.campaigns.map(c => html`<div class="row static"><div class="rowmain"><div class="who">${c.title}</div><div class="txt">${c.type} · ${c.status}</div></div><select data-campaign-status="${c.id}">${['idea','planned','active','paused','completed'].map(st => html`<option value="${st}" ${st===c.status?'selected':''}>${st}</option>`)}</select></div>`) : ''}</div></div>${pb.notice && html`<div class="panel"><div class="pad muted">${pb.notice}</div></div>`}
+    return html`${pb.notice && html`<div class="panel"><div class="pad muted">${pb.notice}</div></div>`}
       <div class="panel"><div class="empty"><b>Nothing to suggest yet</b><br>The playbook fills in as your chats are read and the feeds bring in stories. Check the Trends tab to see whether the feeds are working.</div></div>`;
   }
   pulseState.playbook = pb.items;
   return html`
     ${pb.notice && html`<div class="panel"><div class="pad muted">${pb.notice}</div></div>`}
-    <div class="panel"><h2>Campaign planner <span>Save an idea for your community</span></h2><div class="pad"><div class="tools" style="flex-wrap:wrap"><button class="btn" data-pulse="campaign-template" data-type="Zealy-style quest">Zealy-style quest</button><button class="btn" data-pulse="campaign-template" data-type="Community quiz">Quiz</button><button class="btn" data-pulse="campaign-template" data-type="Community poll">Poll</button><button class="btn" data-pulse="campaign-template" data-type="Web3 trend discussion">Web3 trend</button></div>${campaigns.length ? campaigns.slice(0,8).map(c => html`<div class="row static"><div class="rowmain"><div class="who">${c.title}</div><div class="txt">${c.type} · ${c.status} · ${c.goal || 'No goal set'}</div></div><select data-campaign-status="${c.id}">${['idea','planned','active','paused','completed'].map(st => html`<option value="${st}" ${st===c.status?'selected':''}>${st}</option>`)}</select></div>`) : html`<div class="muted" style="margin-top:10px">No saved campaigns yet. Start with a template above.</div>`}</div></div>
+    
     ${pb.items.map((it, i) => html`<div class="panel"><h2>${it.title} <span><span class="tag ${P_PRI[it.priority]}">${it.priority} priority</span></span></h2>
       <div class="pad">
         <p style="margin:0 0 10px">${it.why}</p>
@@ -709,15 +708,6 @@ const PULSE_ACTS = {
     } catch (err) { if (tab && !tab.closed) tab.close(); throw err; }
     finally { el.disabled = false; el.textContent = 'Connect your X account'; }
   },
-  'campaign-template': async (el) => {
-    const key = state.scope && state.scope !== 'all' ? state.scope : (state.me.communities[0]?.key || '');
-    if (!key) return toast('Choose a community first', true);
-    const fields = await campaignModal({ title: `Create ${el.dataset.type} campaign`, fields: [{ name: 'title', label: 'Campaign name', value: el.dataset.type }, { name: 'goal', label: 'What should this campaign achieve?', value: 'Increase meaningful community participation' }, { name: 'reward', label: 'Optional reward or recognition', value: '' }] });
-    if (!fields?.title) return;
-    const { title, goal, reward } = fields;
-    const c = await api('/pulse/campaigns', { method: 'POST', body: { community: key, title: title.trim(), type: el.dataset.type, goal, reward, audience: 'Active community members', platform: 'Discord + Telegram', steps: ['Announce the campaign and rules', 'Invite participation', 'Share results and recognize contributors'] } });
-    toast('Campaign saved'); return reloadPulse();
-  },
   'x-connect': async (el) => {
     const v = (id) => $(id).value.trim();
     el.disabled = true;
@@ -787,14 +777,18 @@ setInterval(() => {
    Campaign Planner: separate Grow destination, sharing the Pulse context.
    Uses an in-panel conversation and a Sentinel-styled modal; never browser prompt().
 ===================================================================== */
-const campaignPlannerState = { messages: [], source: 'ai', type: 'Zealy-style quest', community: '', example: '' };
-function campaignModal({ title, fields, onSave }) {
+/* campaign-fix-2: server-synced conversation, three-idea flow, saved-plan actions */
+const campaignPlannerState = { source: 'ai', type: 'Zealy-style quest', community: '', messages: [], saved: [] };
+const CP_STATUS = { idea: 'Draft', planned: 'Planned', review: 'Ready for review', approved: 'Approved', active: 'Running (managed outside Sentinel)', paused: 'Paused', completed: 'Completed' };
+const CP_VERDICT = { fit: ['Likely fit', 'ok'], maybe: ['Maybe', 'net'], no: ['Poor fit', 'bad'] };
+const CP_TYPES_UI = ['Zealy-style quest', 'Quiz', 'Community challenge', 'X thread contest', 'Educational campaign', 'Referral campaign', 'AMA / Space', 'Community poll', 'Web3 trend discussion'];
+function campaignModal({ title, fields, onSave, saveLabel }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div'); overlay.className = 'overlay'; overlay.style.zIndex = '70';
     const controls = fields.map(f => f.kind === 'textarea'
       ? html`<label class="fld"><span>${f.label}</span><textarea data-modal-field="${f.name}" rows="3" placeholder="${f.placeholder || ''}">${f.value || ''}</textarea></label>`
       : html`<label class="fld"><span>${f.label}</span><input data-modal-field="${f.name}" value="${f.value || ''}" placeholder="${f.placeholder || ''}" /></label>`);
-    overlay.innerHTML = html`<aside class="drawer modal" role="dialog" aria-modal="true" aria-label="${title}"><div class="row"><h3>${title}</h3><button class="btn" data-modal-close aria-label="Close">×</button></div><div class="pad">${controls}<div class="pbtns"><button class="btn" data-modal-close>Cancel</button><button class="btn primary" data-modal-save>Save</button></div></div></aside>`.s;
+    overlay.innerHTML = html`<aside class="drawer modal" role="dialog" aria-modal="true" aria-label="${title}"><div class="row"><h3>${title}</h3><button class="btn" data-modal-close aria-label="Close">×</button></div><div class="pad">${controls}<div class="pbtns"><button class="btn" data-modal-close>Cancel</button><button class="btn primary" data-modal-save>${saveLabel || 'Save'}</button></div></div></aside>`.s;
     const finish = (value) => { overlay.remove(); resolve(value); };
     overlay.addEventListener('click', async e => {
       if (e.target === overlay || e.target.closest('[data-modal-close]')) return finish(null);
@@ -809,26 +803,90 @@ function campaignModal({ title, fields, onSave }) {
   });
 }
 
+function cpExtract(text) {
+  const t = String(text || '');
+  const pick = (re) => { const m = t.match(re); return m ? m[1].replace(/[*_`#]/g, '').trim().slice(0, 160) : ''; };
+  const numbered = (t.match(/^\s*\d+[.)]\s+.{4,}$/gm) || []).map((s) => s.replace(/^\s*\d+[.)]\s+/, '').replace(/[*_`]/g, '').trim());
+  return {
+    title: pick(/^\s*\**\s*(?:campaign\s*)?(?:title|name)\s*\**\s*:\s*\**\s*([^\n]+)/im) || pick(/^\s*#{1,4}\s+([^\n]+)/m),
+    goal: pick(/objective[^:\n]*:\s*\**\s*([^\n]+)/i),
+    audience: pick(/audience[^:\n]*:\s*\**\s*([^\n]+)/i),
+    platform: pick(/(?:best\s+)?(?:platform|channel)s?[^:\n]*:\s*\**\s*([^\n]+)/i),
+    reward: pick(/reward[^:\n]*:\s*\**\s*([^\n]+)/i),
+    steps: numbered.slice(0, 8)
+  };
+}
+function cpMeta(meta) {
+  if (!meta) return '';
+  const c = meta.context || {};
+  const origin = meta.mode === 'ai' ? 'AI-generated suggestions' : meta.mode === 'built-in' ? 'Built-in starter template (no AI model configured)' : meta.mode === 'saved' ? 'Saved campaign draft' : '';
+  const ctx = meta.mode === 'saved' ? '' : html`<br>Context used: ${c.briefFilled ? 'project brief ✓' : 'project brief empty'} · ${c.discussions || 0} recent discussions · ${c.knowledge || 0} knowledge notes · ${c.evidence || 0} source items`;
+  const ev = (meta.evidence || []).filter((e) => e && e.url);
+  return html`<div class="muted" style="margin-top:8px;font-size:.8rem">${origin}${ctx}</div>${ev.length ? html`<div class="muted" style="font-size:.8rem;margin-top:6px">Source items (stored feed, not a live scan):<br>${ev.map((e) => html`• <a href="${e.url}" target="_blank" rel="noopener noreferrer">${e.title}</a> ${e.source || ''}<br>`)}</div>` : ''}`;
+}
+function cpIdeaCard(m, i, n) {
+  const [label, cls] = CP_VERDICT[i.verdict] || CP_VERDICT.maybe;
+  const basis = i.source && i.source.url ? html`Observed: <a href="${i.source.url}" target="_blank" rel="noopener noreferrer">${i.source.title}</a>` : html`AI suggestion`;
+  return html`<div style="margin-top:10px;padding:12px;border:1px solid var(--line,#d5dadd);border-radius:12px"><div class="who"><b>${n + 1}. ${i.title}</b> <span class="tag ${cls}">${label}</span></div><div>${i.pitch}</div><div class="muted">Why: ${i.why || '—'}</div><div class="muted">${i.channel ? `${i.channel} · ` : ''}${basis}</div><div class="tools" style="margin-top:8px"><button class="btn primary" data-cp-develop="${m.id}" data-idx="${n}">${i.verdict === 'no' ? 'Develop anyway' : 'Develop this'}</button></div></div>`;
+}
+function cpMessage(m) {
+  if (m.role === 'user') return html`<div class="cp-message user"><div class="cp-role">You</div><div class="cp-text">${m.text}</div></div>`;
+  if (m.kind === 'ideas' && Array.isArray(m.ideas)) return html`<div class="cp-message assistant"><div class="cp-role">Campaign Coordinator</div><div class="cp-text">${m.intro || 'Here are three ideas to choose from.'}</div>${m.ideas.map((i, n) => cpIdeaCard(m, i, n))}${cpMeta(m.meta)}</div>`;
+  return html`<div class="cp-message assistant"><div class="cp-role">Campaign Coordinator</div><div class="cp-text">${m.text}</div>${cpMeta(m.meta)}<div class="tools"><button class="btn" data-cp-copy="${m.id}">Copy</button><button class="btn" data-cp-save="${m.id}">Save as campaign</button></div></div>`;
+}
+function cpSavedRow(c) {
+  const origin = c.origin === 'ai' ? 'AI-generated' : c.origin === 'built-in' ? 'Starter template' : 'Manual';
+  const src = c.sources && c.sources.length ? ` · ${c.sources.length} source link(s)` : '';
+  return html`<div class="row static"><div class="rowmain"><div class="who">${c.title}</div><div class="txt">${c.type} · ${c.goal || 'No goal set'} · ${origin}${src}</div><div class="tools" style="margin-top:8px"><button class="btn" data-cp-open="${c.id}">Open in chat</button><button class="btn" data-cp-edit="${c.id}">Edit</button><button class="btn" data-cp-delete="${c.id}">Delete</button></div></div><select data-campaign-status="${c.id}">${Object.entries(CP_STATUS).map(([k, v]) => html`<option value="${k}" ${k === c.status ? 'selected' : ''}>${v}</option>`)}</select></div>`;
+}
+// A draft instruction the manager can edit before pressing Ask AI.
+function cpDraft() {
+  const t = campaignPlannerState.type;
+  return { x: `Show me the latest ${t} campaigns active in Web3 right now, and tell me which would fit my community and which would not.`, web3: 'What are the latest things helping Web3 communities grow faster? Which of them would fit my community?', ai: `I need a ${t} campaign for my community.` }[campaignPlannerState.source];
+}
+
+async function cpAsk({ message = '', example = '', idea = null } = {}) {
+  const community = document.querySelector('#cp-community')?.value || campaignPlannerState.community;
+  campaignPlannerState.community = community;
+  const status = document.querySelector('#cp-status');
+  const locked = [...document.querySelectorAll('#cp-form button, [data-cp-develop]')];
+  if (status) status.textContent = idea ? 'Developing your chosen campaign…' : 'The coordinator is reviewing the community context…';
+  locked.forEach((b) => { b.disabled = true; });
+  try {
+    await api('/pulse/campaign-coordinator', { method: 'POST', body: { community, source: campaignPlannerState.source, type: campaignPlannerState.type, message, example, idea } });
+  } catch (err) {
+    toast(err.message || 'The coordinator could not respond. Please try again.', true);
+    if (status) status.textContent = 'That request failed. Your text is still in the box, so you can try again.';
+    locked.forEach((b) => { b.disabled = false; });
+    return;
+  }
+  await loadCampaignPlanner();
+  const box = document.querySelector('#cp-messages'); if (box) box.scrollTop = box.scrollHeight;
+}
+
 async function loadCampaignPlanner() {
   const communities = state.me.communities || [];
   if (!communities.length) return setPage(html`<div class="topbar"><h1>Campaign Planner</h1></div>${onboarding(null)}`);
   if (!campaignPlannerState.community || !communities.some(c => c.key === campaignPlannerState.community)) campaignPlannerState.community = state.scope && state.scope !== 'all' ? state.scope : communities[0].key;
-  let saved = [];
-  try { saved = await api(`/pulse/campaigns${qs({ community: campaignPlannerState.community })}`); } catch { saved = []; }
+  const q = qs({ community: campaignPlannerState.community });
+  let saved = [], messages = [];
+  try { saved = await api(`/pulse/campaigns${q}`); } catch { saved = []; }
+  try { messages = (await api(`/pulse/campaign-chat${q}`)).messages || []; } catch { messages = []; }
+  campaignPlannerState.saved = saved; campaignPlannerState.messages = messages;
   const options = communities.map(c => html`<option value="${c.key}" ${c.key === campaignPlannerState.community ? 'selected' : ''}>${c.name} · ${PLAT[c.platform]}</option>`);
   const sourceCard = (id, title, desc, glyph) => html`<button class="card campaign-source ${campaignPlannerState.source === id ? 'selected' : ''}" data-cp-source="${id}" type="button"><span class="campaign-glyph">${glyph}</span><b>${title}</b><span class="muted">${desc}</span><span class="campaign-link">${campaignPlannerState.source === id ? 'Selected ✓' : 'Select source →'}</span></button>`;
-  const categories = ['Zealy-style quest','Quiz','Community challenge','X thread contest','Educational campaign','Referral campaign','AMA / Space','Community poll','Web3 trend discussion'];
-  const messages = campaignPlannerState.messages.map(m => html`<div class="cp-message ${m.role === 'user' ? 'user' : 'assistant'}"><div class="cp-role">${m.role === 'user' ? 'You' : 'Campaign Coordinator'}</div><div class="cp-text">${m.text}</div>${m.role === 'assistant' ? html`<div class="tools"><button class="btn" data-cp-copy="${m.id}">Copy</button><button class="btn" data-cp-save="${m.id}">Save as campaign</button></div>` : ''}</div>`);
-  setPage(html`<div class="topbar"><div><h1>Campaign Planner</h1><div class="muted">Discover campaign examples and build community-specific campaigns with AI.</div></div><div class="tools"><label class="fld"><span>Community</span><select id="cp-community">${options}</select></label></div></div>
-    <div class="campaign-intro"><h2>Campaign Intelligence</h2><p class="muted">Choose a source and campaign type. The coordinator keeps your selections and conversation together.</p>
-      <div class="campaign-source-grid">${sourceCard('x','X Campaigns','Explore configured X feeds or bring an X post into the conversation.','𝕏')}${sourceCard('web3','Web3 Sources','Use configured feeds, project announcements and forum links.','◎')}${sourceCard('ai','Ask AI','Generate ideas from your community profile and recent discussions.','✧')}</div>
-      <h3>Campaign discovery categories</h3><div class="campaign-categories">${categories.map(t => html`<button class="chip ${campaignPlannerState.type === t ? 'active' : ''}" data-cp-type="${t}">${t}</button>`)}</div>
+  const rendered = messages.map(cpMessage);
+  const srcName = campaignPlannerState.source === 'x' ? 'X Campaigns' : campaignPlannerState.source === 'web3' ? 'Web3 Sources' : 'Ask AI';
+  setPage(html`<div class="topbar"><div><h1>Campaign Planner</h1><div class="muted">Pick a source and a campaign type. Sentinel brainstorms with you using what it knows about this community.</div></div><div class="tools"><label class="fld"><span>Community</span><select id="cp-community">${options}</select></label></div></div>
+    <div class="campaign-intro"><h2>Campaign Intelligence</h2><p class="muted">Choose how to brainstorm, then a campaign type. You get three ideas to pick from before any full plan is written.</p>
+      <div class="campaign-source-grid">${sourceCard('x', 'X Campaigns', 'What campaigns are active in Web3 right now, and which would fit your community.', '𝕏')}${sourceCard('web3', 'Web3 Sources', 'The latest things helping Web3 communities grow faster, judged against yours.', '◎')}${sourceCard('ai', 'Ask AI', 'Ideas built from your project brief and recent community discussions.', '✧')}</div>
+      <h3>Campaign discovery categories</h3><div class="campaign-categories">${CP_TYPES_UI.map(t => html`<button class="chip ${campaignPlannerState.type === t ? 'active' : ''}" data-cp-type="${t}">${t}</button>`)}</div>
     </div>
     <div class="panel campaign-chat-panel"><div class="panelhead"><h2>Campaign Coordinator <span>Community-aware planning and drafting</span></h2><button class="btn" data-cp-clear>New conversation</button></div>
-      <div class="pad"><div class="cp-context"><span class="tag">Source: ${campaignPlannerState.source === 'x' ? 'X Campaigns' : campaignPlannerState.source === 'web3' ? 'Web3 Sources' : 'Ask AI'}</span><span class="tag">Type: ${campaignPlannerState.type}</span><span class="tag">${communities.find(c => c.key === campaignPlannerState.community)?.name || 'Community'}</span></div>
-      <div class="cp-messages" id="cp-messages">${messages.length ? messages : html`<div class="empty"><b>What campaign should we explore?</b><br>Ask for ideas, paste an example from X, or ask the coordinator to explain how a campaign would benefit your community.</div>`}</div>
-      <form id="cp-form" class="cp-composer"><label class="fld"><span>Message the coordinator</span><textarea id="cp-message" rows="3" placeholder="e.g. Suggest a quiz about our protocol that encourages useful discussion…"></textarea></label><label class="fld"><span>Optional X post, campaign link or example to adapt</span><textarea id="cp-example" rows="2" placeholder="Paste the text or URL here. Sentinel will not claim to have scanned X unless configured results are available.">${campaignPlannerState.example}</textarea></label><div class="tools"><button class="btn" type="button" data-cp-explore>Use selected source</button><button class="btn primary" type="submit">Ask AI</button></div><div class="muted" id="cp-status">The AI uses the selected community's available discussions and project brief. Live X/Zealy discovery depends on configured integrations.</div></form></div></div>
-    <div class="panel"><div class="panelhead"><h2>Saved campaigns <span>${saved.length} saved</span></h2></div><div class="pad">${saved.length ? saved.map(c => html`<div class="row static"><div class="rowmain"><div class="who">${c.title}</div><div class="txt">${c.type} · ${c.goal || 'No goal set'} · ${c.status}</div></div><select data-campaign-status="${c.id}">${['idea','planned','active','paused','completed'].map(st => html`<option value="${st}" ${st===c.status?'selected':''}>${st}</option>`)}</select></div>`) : html`<div class="muted">Your saved campaign plans will appear here.</div>`}</div></div>`);
+      <div class="pad"><div class="cp-context"><span class="tag">Source: ${srcName}</span><span class="tag">Type: ${campaignPlannerState.type}</span><span class="tag">${communities.find(c => c.key === campaignPlannerState.community)?.name || 'Community'}</span></div>
+      <div class="cp-messages" id="cp-messages">${rendered.length ? rendered : html`<div class="empty"><b>What campaign should we explore?</b><br>Pick a source and a type, then press Ask AI (or write your own instruction). You will get three ideas to choose from.</div>`}</div>
+      <form id="cp-form" class="cp-composer"><label class="fld"><span>Message the coordinator</span><textarea id="cp-message" rows="3" placeholder="e.g. I need a Zealy-style quest for my community. Leave empty to use the selected source's default question."></textarea></label><label class="fld"><span>Optional X post, campaign link or example to adapt</span><textarea id="cp-example" rows="2" placeholder="Paste the text or URL here. Sentinel will not claim to have scanned X unless stored results are available."></textarea></label><div class="tools"><button class="btn" type="button" data-cp-explore>Draft instruction</button><button class="btn primary" type="submit">Ask AI</button></div><div class="muted" id="cp-status">Sentinel knows this community from its project brief, recent discussions and knowledge notes. X and Web3 read the stories Sentinel has stored from your feeds, not a live scan. Your conversation syncs across your devices.</div></form></div></div>
+    <div class="panel"><div class="panelhead"><h2>Saved campaigns <span>${saved.length} saved</span></h2></div><div class="pad">${saved.length ? saved.map(cpSavedRow) : html`<div class="muted">Your saved campaign plans will appear here.</div>`}</div></div>`);
 }
 
 // Event delegation is shared with the dashboard's existing handlers.
@@ -837,40 +895,74 @@ document.addEventListener('click', async e => {
   if (source) { campaignPlannerState.source = source.dataset.cpSource; return loadCampaignPlanner(); }
   const type = e.target.closest('[data-cp-type]');
   if (type) { campaignPlannerState.type = type.dataset.cpType; return loadCampaignPlanner(); }
-  if (e.target.closest('[data-cp-clear]')) { campaignPlannerState.messages = []; campaignPlannerState.example = ''; return loadCampaignPlanner(); }
+  if (e.target.closest('[data-cp-clear]')) {
+    try { await api(`/pulse/campaign-chat${qs({ community: campaignPlannerState.community })}`, { method: 'DELETE' }); } catch (err) { return fail(err); }
+    return loadCampaignPlanner();
+  }
   if (e.target.closest('[data-cp-explore]')) {
-    const prompts = { x: 'Find relevant X campaign examples for this campaign type using configured source data. Clearly state if live X results are unavailable.', web3: 'Review configured Web3 feed stories for examples related to this campaign type. Distinguish sourced examples from suggestions.', ai: 'Suggest a campaign for this community and explain why it fits.' };
-    const input = document.querySelector('#cp-message'); if (input) input.value = prompts[campaignPlannerState.source];
-    document.querySelector('#cp-message')?.focus(); return;
+    const input = document.querySelector('#cp-message');
+    if (input && !input.value.trim()) input.value = cpDraft();
+    input?.focus(); return;
+  }
+  const dev = e.target.closest('[data-cp-develop]');
+  if (dev) {
+    const m = campaignPlannerState.messages.find(x => x.id === dev.dataset.cpDevelop);
+    const idea = m?.ideas?.[Number(dev.dataset.idx)]; if (!idea) return;
+    return cpAsk({ idea });
   }
   const copy = e.target.closest('[data-cp-copy]');
   if (copy) { const m = campaignPlannerState.messages.find(x => x.id === copy.dataset.cpCopy); if (m) { await navigator.clipboard.writeText(m.text); toast('Copied to clipboard'); } return; }
   const save = e.target.closest('[data-cp-save]');
   if (save) {
     const m = campaignPlannerState.messages.find(x => x.id === save.dataset.cpSave); if (!m) return;
-    const fields = await campaignModal({ title: 'Save campaign idea', fields: [{ name: 'title', label: 'Campaign name', value: campaignPlannerState.type }, { name: 'goal', label: 'Goal', value: 'Increase meaningful community participation' }, { name: 'reward', label: 'Optional reward', value: '' }] });
+    const x = cpExtract(m.text);
+    const comm = (state.me.communities || []).find((c) => c.key === campaignPlannerState.community);
+    const fields = await campaignModal({ title: 'Save campaign idea', fields: [
+      { name: 'title', label: 'Campaign name', value: x.title || campaignPlannerState.type },
+      { name: 'goal', label: 'Goal', value: x.goal },
+      { name: 'audience', label: 'Target audience', value: x.audience },
+      { name: 'platform', label: 'Platforms / channels', value: x.platform || (comm ? PLAT[comm.platform] : '') },
+      { name: 'reward', label: 'Optional reward', value: x.reward }
+    ] });
     if (!fields?.title) return;
-    try { await api('/pulse/campaigns', { method: 'POST', body: { community: campaignPlannerState.community, title: fields.title, type: campaignPlannerState.type, goal: fields.goal, reward: fields.reward, platform: 'Discord + Telegram', audience: 'Community members', draft: m.text, steps: ['Announce the campaign and rules','Invite participation','Share results and recognize contributors'] } }); toast('Campaign saved'); await loadCampaignPlanner(); } catch (err) { fail(err); }
+    try {
+      const origin = m.meta?.mode === 'ai' ? 'ai' : m.meta?.mode === 'built-in' ? 'built-in' : 'manual';
+      await api('/pulse/campaigns', { method: 'POST', body: { community: campaignPlannerState.community, title: fields.title, type: campaignPlannerState.type, goal: fields.goal, audience: fields.audience, platform: fields.platform, reward: fields.reward, draft: m.text, steps: x.steps, sources: m.meta?.evidence || [], origin } });
+      toast('Saved as a draft. Nothing has been published.'); await loadCampaignPlanner();
+    } catch (err) { fail(err); }
+    return;
   }
+  const btn = e.target.closest('[data-cp-open],[data-cp-edit],[data-cp-delete]'); if (!btn) return;
+  const id = btn.dataset.cpOpen || btn.dataset.cpEdit || btn.dataset.cpDelete;
+  const c = campaignPlannerState.saved.find((s) => s.id === id); if (!c) return;
+  try {
+    if (btn.dataset.cpOpen) {
+      await api('/pulse/campaign-chat/open', { method: 'POST', body: { community: campaignPlannerState.community, id } });
+      await loadCampaignPlanner(); const box = document.querySelector('#cp-messages'); if (box) box.scrollTop = box.scrollHeight; return;
+    }
+    if (btn.dataset.cpDelete) {
+      const ok = await campaignModal({ title: `Delete "${c.title}"? This cannot be undone.`, fields: [], saveLabel: 'Delete' }); if (!ok) return;
+      await api(`/pulse/campaigns/${enc(id)}`, { method: 'DELETE' }); toast('Campaign deleted'); return loadCampaignPlanner();
+    }
+    const f = await campaignModal({ title: 'Edit campaign', fields: [
+      { name: 'title', label: 'Campaign name', value: c.title }, { name: 'goal', label: 'Goal', value: c.goal },
+      { name: 'audience', label: 'Target audience', value: c.audience }, { name: 'platform', label: 'Platforms / channels', value: c.platform },
+      { name: 'reward', label: 'Optional reward', value: c.reward }, { name: 'draft', label: 'Draft content', kind: 'textarea', value: c.draft }
+    ] });
+    if (!f?.title) return;
+    await api(`/pulse/campaigns/${enc(id)}`, { method: 'PATCH', body: f }); toast('Campaign updated'); return loadCampaignPlanner();
+  } catch (err) { fail(err); }
+});
+document.addEventListener('change', async e => {
+  if (e.target.id !== 'cp-community') return;
+  campaignPlannerState.community = e.target.value;
+  await loadCampaignPlanner();
 });
 document.addEventListener('submit', async e => {
   if (e.target.id !== 'cp-form') return;
   e.preventDefault();
-  const message = document.querySelector('#cp-message')?.value.trim() || '';
-  const example = document.querySelector('#cp-example')?.value.trim() || '';
-  if (!message && !example) { toast('Enter a question or paste a campaign example first', true); return; }
-  const community = document.querySelector('#cp-community')?.value || campaignPlannerState.community;
-  campaignPlannerState.community = community; campaignPlannerState.example = example;
-  campaignPlannerState.messages.push({ id: `u-${Date.now()}`, role: 'user', text: message || 'Please adapt this campaign example to our community.' + (example ? `\n\nExample: ${example}` : '') });
-  const status = document.querySelector('#cp-status'); if (status) status.textContent = 'The coordinator is reviewing the community context…';
-  const submit = e.target.querySelector('[type="submit"]'); if (submit) { submit.disabled = true; submit.textContent = 'Thinking…'; }
-  try {
-    const r = await api('/pulse/campaign-coordinator', { method: 'POST', body: { community, source: campaignPlannerState.source, type: campaignPlannerState.type, message, example } });
-    campaignPlannerState.messages.push({ id: `a-${Date.now()}`, role: 'assistant', text: r.reply });
-  } catch (err) { campaignPlannerState.messages.push({ id: `e-${Date.now()}`, role: 'assistant', text: `I couldn't generate that response: ${err.message || 'Please try again.'}` }); }
-  await loadCampaignPlanner();
+  await cpAsk({ message: document.querySelector('#cp-message')?.value.trim() || '', example: document.querySelector('#cp-example')?.value.trim() || '' });
 });
-
 // The X tab tells this tab when it is finished (same site, so this works even after X was in between).
 try {
   new BroadcastChannel('sentinel-x').onmessage = (e) => {

@@ -393,3 +393,49 @@ h4{margin:20px 0 8px; font-size:12.5px; font-weight:600; color:var(--sub);}
 .fold>summary .chev{color:var(--sub); transition:transform .15s;}
 .fold[open]>summary .chev{transform:rotate(180deg);}
 .fold[open]>summary{border-bottom:1px solid var(--line);}
+/* fix-3: shared panel header (it had no styles, so headings touched the panel edge) and compact report cards */
+.panelhead{display:flex; justify-content:space-between; align-items:center; gap:8px 14px; flex-wrap:wrap; padding:14px 18px; border-bottom:1px solid var(--line);}
+.panelhead > h2{margin:0; padding:0; border:0; min-width:0; font-size:14px; font-weight:600; display:flex; align-items:baseline; gap:2px 10px; flex-wrap:wrap;}
+.panelhead > h2 span{color:var(--sub); font-weight:400; font-size:12.5px;}
+.panelhead + .pad{padding:16px 18px 18px;}
+.panelhead + .pad .tools{margin-top:12px;}
+.tp-card{padding:0;}
+.tp-head{display:flex; justify-content:space-between; align-items:flex-start; gap:12px; padding:14px 18px 4px;}
+.tp-title{font-size:14.5px; font-weight:600;}
+.tp-meta{font-size:12.5px; color:var(--sub); margin-top:2px;}
+.tp-facts{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px 18px; margin:10px 18px 4px; padding:12px 14px; background:var(--surface-2); border:1px solid var(--line); border-radius:10px;}
+.tp-facts dt{font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--faint); font-weight:600;}
+.tp-facts dd{margin:2px 0 0; font-size:13px; overflow-wrap:anywhere;}
+.tp-text{white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; line-height:1.65; color:var(--text); padding:12px 18px 2px;}
+.tp-more{margin:6px 0 0;}
+.tp-more > summary{cursor:pointer; padding:8px 18px; font-size:13px; font-weight:600; color:var(--accent); list-style:none;}
+.tp-more > summary::-webkit-details-marker{display:none;}
+.tp-actions{display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px 18px 16px;}
+.tp-spacer{flex:1;}
+@media (max-width:560px){.tp-spacer{display:none;}}
+/* fix-4: landing page */
+.login-brand{gap:24px; padding-top:36px; padding-bottom:30px;}
+.login-hero h1{font-size:clamp(26px,2.8vw,36px); margin-bottom:12px; text-wrap:balance;}
+.login-hero .lead{color:var(--rail-text); font-size:14.5px; line-height:1.5; margin:0 0 20px;}
+.lp-card{background:rgba(255,255,255,.04); border:1px solid var(--rail-line); border-radius:14px; padding:12px 16px 4px; margin:0 0 12px;}
+.lp-head{display:flex; justify-content:space-between; align-items:center;}
+.lp-title{display:flex; align-items:center; gap:8px; color:#fff; font-weight:600; font-size:13.5px;}
+.lp-title .ic svg{width:16px; height:16px; color:var(--rail-accent);}
+.lp-sample{font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--rail-sub); border:1px solid var(--rail-line); border-radius:999px; padding:1px 8px;}
+.bigpulse.lp-line{display:block; width:100%; max-width:none; height:22px; margin:6px 0 4px;}
+.lp-rows{list-style:none; margin:0; padding:0;}
+.lp-rows li{display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--rail-line); font-size:13px; color:var(--rail-text);}
+.lp-tag{flex:0 0 auto; min-width:70px; text-align:center; font-size:11px; font-weight:600; padding:2px 8px; border-radius:6px;}
+.lp-tag.q{color:#8fd3ff; background:rgba(106,174,242,.16);}
+.lp-tag.c{color:#ffb4bf; background:rgba(244,105,123,.16);}
+.lp-tag.i{color:#8ff0c4; background:rgba(62,207,142,.16);}
+.lp-tiles{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px;}
+.lp-tile{display:flex; flex-direction:column; gap:3px; padding:11px 12px; border:1px solid var(--rail-line); border-radius:12px; background:rgba(255,255,255,.025);}
+.lp-tile .pi{width:30px; height:30px; border-radius:9px; background:var(--rail-active); color:var(--rail-accent); display:flex; align-items:center; justify-content:center; margin-bottom:4px;}
+.lp-tile .pi svg{width:16px; height:16px;}
+.lp-tile b{color:#fff; font-size:13px; font-weight:600;}
+.lp-tile .d{color:var(--rail-text); font-size:12.5px; line-height:1.45;}
+.login .trust{display:flex; gap:8px; align-items:flex-start; margin:20px 0 0; font-size:13px; line-height:1.5; color:var(--sub);}
+.login .trust svg{width:16px; height:16px; flex:0 0 auto; margin-top:2px; color:var(--accent);}
+.brand small{line-height:1.25; overflow-wrap:anywhere;}
+@media (max-width:900px){.login{grid-template-columns:1fr;} .login-brand{padding:32px 24px;} .lp-tiles{grid-template-columns:1fr;}}
