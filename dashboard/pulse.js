@@ -7,7 +7,7 @@
    escapes anything that came from outside, so a message full of HTML
    cannot run code).
 ===================================================================== */
-const pulseState = { setup: 'brief', briefKey: '', kind: 'all', topic: '', showDone: false, space: 'all', days: 7 };
+const pulseState = { setup: 'brief', kind: 'all', topic: '', showDone: false, space: 'all', days: 7 };
 
 const P_KIND = { idea: 'Idea', question: 'Question', concern: 'Concern', praise: 'Praise', discussion: 'Discussion' };
 // Only things that need attention get a colour: concerns, and (below) unanswered questions.
@@ -258,7 +258,9 @@ async function pulsePools(community) {
     </div>
     <div class="panel"><h2>Watch a pool or token <span>Osmosis, Raydium, PancakeSwap, Uniswap and more</span></h2><div class="pad">
       <div class="muted" style="margin-bottom:12px">Paste a link to a pool, for example app.osmosis.zone/pool/3505. Or choose "Every pool for a token", paste the token's contract address, and you will also hear when a <b>new</b> pool appears for it. That is worth knowing, because anyone can create a pool for your token. Liquidity and trading volume come from DEX Screener (free). It does not provide APY. APY only appears for a DefiLlama pool link, and only if DefiLlama allows it.</div>
-      <label class="fld"><span>Community</span><select id="pool-community">${comms.map((c) => html`<option value="${c.key}" ${c.key === state.scope ? 'selected' : ''}>${CODE[c.platform]} · ${c.name}</option>`)}</select></label>
+      ${comms.some((c) => c.key === state.scope)
+        ? html`<div class="fld"><span>Adding to</span><b>${CODE[comms.find((c) => c.key === state.scope).platform]} · ${comms.find((c) => c.key === state.scope).name}</b><input type="hidden" id="pool-community" value="${state.scope}"><div class="muted">To use a different community, change it at the top right.</div></div>`
+        : html`<label class="fld"><span>Community</span><select id="pool-community"><option value="">Choose a community…</option>${comms.map((c) => html`<option value="${c.key}">${CODE[c.platform]} · ${c.name}</option>`)}</select></label>`}
       <label class="fld"><span>What to watch</span><select id="pool-mode"><option value="pool">One pool</option><option value="token">Every pool for a token</option></select></label>
       ${inp('pool-input', 'Link or address', '', 'https://app.osmosis.zone/pool/3505')}
       <label class="fld"><span>Chain <em>only needed when you paste a bare address</em></span><select id="pool-chain"><option value="">Work it out from the link</option>${Object.entries(d.chains).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
@@ -323,17 +325,19 @@ const inp = (id, label, val, ph = '') => html`<label class="fld"><span>${label}<
 const area = (id, label, val, hint, rows = 4) => html`<label class="fld"><span>${label} <em class="muted">${hint}</em></span><textarea id="${id}" rows="${rows}">${val}</textarea></label>`;
 
 async function pulseSetup() {
+  // One community selector for the whole Pulse page: the one at the top right. Setup follows it,
+  // so a brief or a knowledge document can never be saved to a community other than the one shown.
   const comms = state.me.communities;
-  if (!comms.some((c) => c.key === pulseState.briefKey)) {
-    pulseState.briefKey = (comms.find((c) => c.key === state.scope) || comms[0]).key;
+  const c = comms.find((x) => x.key === state.scope);
+  if (!c) {
+    return html`<div class="panel"><div class="pad"><div class="empty"><b>Choose a community to set up.</b><br>Use the community selector at the top right of this page. The brief, knowledge, drafting and focus settings below belong to one community at a time.</div></div></div>`;
   }
-  const c = comms.find((x) => x.key === pulseState.briefKey);
   const section = SETUP_SECTIONS.some(([id]) => id === pulseState.setup) ? pulseState.setup : 'brief';
   const body = section === 'brief' ? await setupBrief(c) : section === 'knowledge' ? await setupKnowledge(c)
     : section === 'drafting' ? await setupDrafting(c) : section === 'focus' ? await setupFocus(c) : section === 'x' ? await setupX(c) : await setupReading();
   return html`
-    <div class="panel"><div class="pad"><label class="fld" style="margin:0"><span>Setting up</span>
-      <select data-pulse-change="briefcommunity">${comms.map((x) => html`<option value="${x.key}" ${x.key === c.key ? 'selected' : ''}>${CODE[x.platform]} · ${x.name}</option>`)}</select></label></div></div>
+    <div class="panel"><div class="pad"><div class="muted">Setting up</div><b>${CODE[c.platform]} · ${c.name}</b>
+      <div class="muted" style="margin-top:4px">To set up a different community, change it at the top right.</div></div></div>
     <div class="subnav">${SETUP_SECTIONS.map(([id, l]) => html`<button class="${section === id ? 'active' : ''}" data-pulse="setup-section" data-section="${id}">${l}</button>`)}</div>
     ${body}`;
 }
@@ -619,6 +623,7 @@ const PULSE_ACTS = {
   'pool-add': async (el) => {
     const input = $('#pool-input').value.trim();
     if (!input) return toast('Paste a link or an address first', true);
+    if (!$('#pool-community').value) return toast('Choose a community first', true);
     const [platform, ...rest] = $('#pool-community').value.split(':');
     el.disabled = true; el.textContent = 'Reading…';
     try {
@@ -756,7 +761,6 @@ document.addEventListener('change', async (e) => {
   if (!el) return;
   if (el.dataset.pulseChange === 'days') pulseState.days = Number(el.value);
   if (el.dataset.pulseChange === 'showdone') pulseState.showDone = el.checked;
-  if (el.dataset.pulseChange === 'briefcommunity') pulseState.briefKey = el.value;
   reloadPulse();
 });
 

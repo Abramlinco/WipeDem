@@ -3,6 +3,7 @@ import { analyze } from './analyze.js';
 import { makeDraft, withinAllowance } from './reply.js';
 import { config } from '../config.js';
 import { buildContext } from './context.js';
+import { notifyNewDiscussion } from './notify.js'; // notify-patch
 
 export { noteReply };
 
@@ -39,6 +40,7 @@ export function captureMessage({ settings, platform, communityId, communityName,
     });
     pulseDebug(platform, `KEPT as ${result.kind}`, username, text);
     autoDraft(record, settings);
+    notifyNewDiscussion(record);
     return record;
   } catch (e) {
     console.error('[pulse] could not keep a message', e.message);

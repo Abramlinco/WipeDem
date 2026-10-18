@@ -22,13 +22,19 @@ const usd = (n) => (n == null ? 'n/a' : n >= 1e9 ? `$${(n / 1e9).toFixed(2)}B` :
 const stamp = (iso) => `${String(iso).slice(0, 16).replace('T', ' ')} UTC`;
 const num = (v) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : null);
 
+// Node's fetch reports a network failure as TypeError('fetch failed') with the real reason in e.cause.code,
+// so looking only at e.code missed every connection reset, timeout and refused connection.
+const NET_CODES = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT'];
+const netCode = (e) => e?.code || e?.cause?.code || '';
+const isNetwork = (e) => NET_CODES.includes(netCode(e)) || (e?.name === 'TypeError' && /fetch failed/i.test(String(e.message || '')));
+
 // Retry only transient upstream failures; do not hammer a rate-limited service.
 async function fetchPoolText(url, fetcher = fetchText) {
   let last;
   for (let attempt = 0; attempt < 3; attempt++) {
     try { return await fetcher(url); } catch (e) {
       last = e;
-      const transient = e.status === 429 || e.status >= 500 || ['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED'].includes(e.code) || e.name === 'AbortError' || e.name === 'TimeoutError';
+      const transient = e.status === 429 || e.status >= 500 || isNetwork(e) || e.name === 'AbortError' || e.name === 'TimeoutError';
       if (!transient || attempt === 2) break;
       const retryAfter = Math.min(1500, Math.max(0, Number(e.retryAfterSeconds || 0) * 1000));
       await new Promise((resolve) => setTimeout(resolve, Math.max(retryAfter, attempt === 0 ? 300 : 800)));
@@ -115,8 +121,8 @@ const json = (text) => { try { return JSON.parse(text); } catch { throw new Erro
 
 function friendly(e, what) {
   // DNS and transport failures do not mean that a pool/token is invalid.
-  if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED'].includes(e.code)) {
-    return new Error('Could not reach DEX Screener because of a temporary DNS or network problem. Your pool was not marked invalid. Check your server connection and try again in a minute.');
+  if (isNetwork(e)) {
+    return new Error(`Could not reach DEX Screener (${netCode(e) || 'network error'}). This is a connection problem on the server, not a problem with your pool. Check the server's internet and DNS, then press Check now.`);
   }
   if (e.name === 'AbortError' || e.name === 'TimeoutError') {
     return new Error('The data service took too long to respond. Your pool was not marked invalid. Try again shortly.');
@@ -230,7 +236,8 @@ export function poolChunks(items) {
   for (const p of items) {
     const s = p.snapshot;
     if (!s) continue;
-    const base = { live: true, at: s.at, sourceId: p.id, search: 'pool pools liquidity tvl volume trading apy apr yield' };
+    // Only pools that really have a yield figure may be found by yield words, or a question about APY would be "answered" with liquidity numbers.
+    const base = { live: true, at: s.at, sourceId: p.id, search: `pool pools liquidity tvl volume trading${s.apy != null ? ' apy apr yield' : ''}` };
     const where = (x) => `${x.label} on ${x.dex || 'a DEX'} (${CHAIN_NAMES[x.chain] || x.chain || ''})`.replace(/ \(\)$/, '');
     if (s.kind === 'pair') {
       out.push({ ...base, title: s.label, url: s.url || '', text: `${where(s)}: liquidity is about ${usd(s.tvlUsd)} and 24 hour trading volume about ${usd(s.volume24h)}, as of ${stamp(s.at)}. Source: DEX Screener.` });

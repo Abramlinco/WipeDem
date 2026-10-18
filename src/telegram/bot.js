@@ -284,3 +284,8 @@ export async function postTelegram(chatId, text) {
   await bot.sendMessage(chatId, text.slice(0, 3900));
   return true;
 }
+// notify-patch: a private message to a manager (phone alert). Telegram only allows this after the person has pressed Start on the bot, which signing in already needs.
+export async function sendTelegramDm(userId, text) {
+  if (!bot) throw new Error('The Telegram bot is not running.');
+  await bot.sendMessage(Number(userId), String(text).slice(0, 3900), { disable_web_page_preview: true });
+}

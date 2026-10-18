@@ -338,3 +338,9 @@ export async function postDiscord(guildId, channelId, text) {
   await channel.send({ content: text.slice(0, 1900), allowedMentions: { parse: [] } });
   return true;
 }
+// notify-patch: a private message to a manager (phone alert). Fails if they have switched off direct messages from server members.
+export async function sendDiscordDm(userId, text) {
+  if (!client) throw new Error('The Discord bot is not running.');
+  const user = await client.users.fetch(String(userId));
+  await user.send({ content: String(text).slice(0, 1900), allowedMentions: { parse: [] } });
+}

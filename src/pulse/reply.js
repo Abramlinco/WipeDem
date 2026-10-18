@@ -25,7 +25,9 @@ const hasBrief = (b) => !!(b && (b.projectName || b.about || b.facts?.length));
 /* ------------------------------------------------------------------ */
 
 const R = {
-  price: /\b(price|pump|pumping|dump|dumping|moon|lambo|worth|buy|sell|invest|investment|100x|10x|target|prediction|predict|will it (go|reach|hit|rise)|how high|how low|entry|exit|profit|returns?)\b/i,
+  // Everyday words such as "exit", "return" and "target" are not price talk on their own ("exit pathways", "receive LSTs in return").
+  // They only count when they sit next to a price word ("exit price", "guaranteed returns").
+  price: /\b(prices?|pump|pumping|dump|dumping|moon|lambo|worth|buy|sell|invest|investment|100x|10x|prediction|predict|will it (go|reach|hit|rise)|how high|how low|profits?|price target|(entry|exit) (price|point)|(guaranteed|expected|investment) returns?)\b/i,
   support: /\b(not working|doesn't work|isn't working|broken|bug|error|failed|stuck|can't|cannot|unable|lost|never (received|got)|refund|kyc|ticket|support|help me|wrong address|pending)\b/i,
   market: /\b(trending|trend|popping|news|market|narrative|what'?s (happening|new|hot|going on)|bitcoin|btc|ethereum|eth|solana|sol|bull|bear|web3|crypto|defi)\b/i,
   project: /\b(token|tokens|stake|staking|airdrop|roadmap|mainnet|testnet|tokenomics|vesting|listing|our project|the project|the team|governance|rewards?|pool|pools|apr|apy|liquidity)\b/i
@@ -235,10 +237,11 @@ const SYSTEM = `You write ONE ready-to-send reply for a community manager. The m
 
 STRICT OUTPUT RULES:
 - Output only the reply itself. Never include research notes, source lists, knowledge-bank excerpts, article titles, numbered news roundups, analysis, headings, or explanations of how you formed the answer.
-- Usually write 1-3 short sentences and no more than 70 words. Use a numbered list only if the member explicitly asks multiple distinct questions.
+- Usually write 1-3 short sentences and no more than 70 words (up to 120 when the member asked several questions or a general explanation is needed). Use a numbered list only if the member explicitly asks multiple distinct questions.
 - Answer the actual point in the member's message. Do not change the topic to general crypto news, market narratives, Bitcoin, airdrops, or staking unless the member specifically asked about that topic.
 - Use project knowledge only when it directly answers the member. Use latest stories only when the member explicitly asks about current news/trends or a story is directly necessary to answer. Otherwise ignore all stories.
-- If reliable project-specific information is missing, briefly say the team will verify it; do not fill the gap with unrelated facts.
+- If reliable project-specific information is missing, briefly say the team will verify that part; do not fill the gap with unrelated facts.
+- If the member asks a general, educational question about how a widely known crypto mechanism works (staking, unbonding, liquid staking, slashing, validators, bridges, gas), you may explain it briefly and neutrally from general knowledge. Say plainly that this is general information and not confirmed for this project. A general explanation never states project-specific facts, rates, fees, dates or links, and never tells the member what to do with their funds.
 - Never predict price, promise returns, airdrops, listings, partnerships or dates, give financial advice, or ask anyone to DM. Never invent links.
 - Every number, date, fee, percentage or link in the reply must appear in the project brief, the knowledge excerpts or the member's message. If it does not appear there, leave it out.
 - The community context only tells you what members care about and what problems are already being reported. Use it to understand the member, never state it as a confirmed fact and never quote its counts.
@@ -315,6 +318,8 @@ export async function makeDraft({ discussion: d, brief, trends, knowledge = [], 
     note = (note ? note + ' ' : '') + 'The price question used the built-in safe response instead of AI.';
   }
   if (!text) text = templateDraft(ctx);
+  // Nothing in the knowledge bank matched, so anything beyond "the team will check" came from the model's general knowledge.
+  if (via === 'ai' && basis === 'none') note = `${note ? note + ' ' : ''}Nothing in your knowledge bank matched, so any explanation here is general information, not from your project documents. Read it before sending.`;
 
   const flags = checkPolicy(text, brief, urls);
   // If the AI broke a rule, fall back to the plain drafter rather than hand over a bad draft.

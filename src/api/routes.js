@@ -4,6 +4,7 @@ import { getAccess } from '../access.js';
 import { platforms } from '../platform.js';
 import { defaultEscalation } from '../db.js';
 import { pulseRouter } from './pulse.js';
+import { notificationsRouter } from './notifications.js'; // notify-patch
 import {
   listAlerts, resolveAlertsForUser, getStats, getSettings, saveSettings, addCaution, listCautions,
   listMemberEvents, getNetworkHistory, summarizeNetwork, searchNetwork, getDailyScanned, getMemberCounts,
@@ -336,6 +337,7 @@ apiRouter.get('/reports/export.csv', async (req, res) => {
 /* ---------- Pulse: community ideas, market trends, playbook ---------- */
 
 apiRouter.use('/pulse', pulseRouter);
+apiRouter.use('/notifications', notificationsRouter);
 
 /* ---------- shared network ---------- */
 

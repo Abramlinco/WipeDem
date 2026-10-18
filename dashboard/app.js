@@ -154,6 +154,7 @@ function render() {
   const { page } = route();
   $('#app').innerHTML = shell(page).s;
   window.Theme?.sync?.();
+  window.Notify?.start?.(); // notify-patch
   loadPage(page);
   window.Guide?.afterRender?.(page);
 }
@@ -235,7 +236,7 @@ function shell(page) {
       <div class="brand">${raw(MARK)}<div><b>Sentinel</b><small>Intelligent Community Pioneer</small></div></div>
       <nav class="nav">
         ${NAV.map(([id, label, ic]) => html`${NAV_GROUP[id] ? html`<div class="navgroup">${NAV_GROUP[id]}</div>` : ''}<a data-nav="#/${id}" class="${page === id ? 'active' : ''}">${icon(ic)}${label}
-          ${(id === 'discord' || id === 'telegram' || id === 'faqs') ? html`<span class="badge" data-badge="${id}" hidden></span>` : ''}
+          ${['home', 'pulse', 'discord', 'telegram', 'faqs'].includes(id) ? html`<span class="badge" data-badge="${id}" hidden></span>` : ''}
           ${(id === 'discord' || id === 'telegram') ? html`<button class="navplus" data-act="add-community" data-platform="${id}" title="Add ${label}" aria-label="Add ${label}">${icon('plus')}</button>` : ''}
         </a>`)}
       </nav>
@@ -260,7 +261,7 @@ function shell(page) {
       <a data-nav="#/settings/account">${icon('user')}Account</a>
       <a data-act="logout">${icon('logout')}Log out</a>
     </div>
-    ${NAV.slice(0, 4).map(([id, label, ic]) => html`<a data-nav="#/${id}" class="${page === id ? 'active' : ''}">${icon(ic)}${label}</a>`)}
+    ${NAV.slice(0, 4).map(([id, label, ic]) => html`<a data-nav="#/${id}" class="${page === id ? 'active' : ''}">${icon(ic)}${label}<span class="badge tb" data-badge="${id}" hidden></span></a>`)}
     <a data-act="more" class="${NAV.slice(4).some((n) => n[0] === page) ? 'active' : ''}">${icon('menu')}More</a>
   </nav>`;
 }
@@ -322,6 +323,7 @@ const setPage = (h) => {
   el.innerHTML = h.s;
   decoratePage();
   window.Guide?.afterPage?.();
+  window.Notify?.afterPage?.();
 };
 
 /* =====================================================================
@@ -370,11 +372,12 @@ function onboarding(platform) {
 ===================================================================== */
 async function loadHome() {
   const community = state.scope === 'all' ? undefined : state.scope;
-  const [stats, tg, dc, pulse] = await Promise.all([
+  const [stats, tg, dc, pulse, nf] = await Promise.all([
     api(`/stats${qs({ community })}`),
     api(`/alerts${qs({ community, platform: 'telegram', resolved: false, limit: 6 })}`),
     api(`/alerts${qs({ community, platform: 'discord', resolved: false, limit: 6 })}`),
-    api(`/pulse/overview${qs({ community, days: 7 })}`).catch(() => null)
+    api(`/pulse/overview${qs({ community, days: 7 })}`).catch(() => null),
+    window.Notify?.refresh?.().catch(() => null)
   ]);
   const column = (platform, alerts) => html`<div class="panel">
     <h2>${PLAT[platform]} <span><a data-nav="#/${platform}" style="cursor:pointer">Open ${PLAT[platform]} dashboard →</a></span></h2>
@@ -384,10 +387,13 @@ async function loadHome() {
   const n = state.me.communities.length, waiting = stats.awaitingReview;
   state.homeSub = !n ? 'Connect a community to start protecting it.'
     : `Sentinel is watching ${n} ${n === 1 ? 'community' : 'communities'}. ${waiting ? `${waiting} ${waiting === 1 ? 'message is' : 'messages are'} waiting for your review.` : 'Nothing is waiting for your review.'}`;
+  const np = nf?.open?.pulse?.total || 0;
+  if (np) state.homeSub += ` ${np} ${np === 1 ? 'message needs' : 'messages need'} attention in Pulse.`;
   setPage(html`
     <div class="topbar"><h1>Today, at a glance</h1><div class="tools">${scopeSelect(null)}</div></div>
     ${!state.me.communities.length && onboarding(null)}
     ${statCards(stats)}
+    ${window.Notify?.homeCard?.(nf) || ''}
     ${pulse ? html`<div class="panel"><h2>Pulse at a glance <span><a data-nav="#/pulse/ideas" style="cursor:pointer">Open Pulse →</a></span></h2>
       <div class="grid">
         <div class="card accent"><div class="num">${num(pulse.totals?.ideas)}</div><div class="lbl">Ideas this week</div></div>
