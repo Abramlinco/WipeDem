@@ -222,6 +222,7 @@ const usd = (n) => (n == null ? 'n/a' : n >= 1e9 ? `$${(n / 1e9).toFixed(2)}B` :
 const POOL_KIND = { pair: 'Pool', token: 'All pools for a token', 'llama-pool': 'DefiLlama pool' };
 const EV_LABEL = { liquidity_drop: 'Liquidity dropped', liquidity_up: 'Liquidity grew', volume_spike: 'Trading spike', new_pool: 'New pool', apy_change: 'Yield changed' };
 const SEV_CLS = { high: 'bad', medium: 'net', info: 'info' };
+// pool-polish: duplicate dex/chain tag hidden, panel wording updated
 
 async function pulsePools(community) {
   const d = await api(`/pulse/pools${qs({ community, days: pulseState.days })}`);
@@ -232,7 +233,7 @@ async function pulsePools(community) {
     const [plat, ...rest] = p.communityKey.split(':');
     const where = html`data-platform="${plat}" data-community="${rest.join(':')}" data-id="${p.id}"`;
     return html`<div class="row static"><div class="rowmain">
-      <div class="who">${p.label} <span class="tag">${POOL_KIND[p.kind]}</span>${sn?.dex && html` <span class="tag">${sn.dex}</span>`}${p.chain && p.chain !== 'defillama' && html` <span class="tag">${chainName(p.chain)}</span>`}
+      <div class="who">${p.label} <span class="tag">${POOL_KIND[p.kind]}</span>${sn?.dex && String(sn.dex).toLowerCase() !== String(chainName(p.chain)).toLowerCase() && html` <span class="tag">${sn.dex}</span>`}${p.chain && p.chain !== 'defillama' && html` <span class="tag">${chainName(p.chain)}</span>`}
         ${p.status === 'error' && html` <span class="tag bad">${sn ? 'Last check failed' : 'Could not read'}</span>`}</div>
       ${sn && html`<div class="poolstats">
         <div><span>Liquidity</span><b>${usd(sn.tvlUsd)}</b>${p.tvlChange != null && html`<em class="${p.tvlChange < 0 ? 'neg' : 'pos'}">${p.tvlChange > 0 ? '+' : ''}${Math.round(p.tvlChange * 100)}% ${p.since}</em>`}</div>
@@ -256,8 +257,8 @@ async function pulsePools(community) {
     <div class="panel"><h2>Pools you watch <span>${d.items.length} ${d.items.length === 1 ? 'pool' : 'pools'}</span></h2>
       ${d.items.length ? d.items.map(row) : html`<div class="empty"><b>Nothing watched yet</b><br>Paste a link to one of your pools below, or your token's address to watch every pool it has.</div>`}
     </div>
-    <div class="panel"><h2>Watch a pool or token <span>Osmosis, Raydium, PancakeSwap, Uniswap and more</span></h2><div class="pad">
-      <div class="muted" style="margin-bottom:12px">Paste a link to a pool, for example app.osmosis.zone/pool/3505. Or choose "Every pool for a token", paste the token's contract address, and you will also hear when a <b>new</b> pool appears for it. That is worth knowing, because anyone can create a pool for your token. Liquidity and trading volume come from DEX Screener (free). It does not provide APY. APY only appears for a DefiLlama pool link, and only if DefiLlama allows it.</div>
+    <div class="panel"><h2>Watch a pool or token <span>Osmosis, Raydium, PancakeSwap, Uniswap, QuickSwap and more</span></h2><div class="pad">
+      <div class="muted" style="margin-bottom:12px">Paste a link to a pool, for example app.osmosis.zone/pool/3505. Or choose "Every pool for a token", paste the token's contract address, and you will also hear when a <b>new</b> pool appears for it. That is worth knowing, because anyone can create a pool for your token. Liquidity and trading volume come from DEX Screener (free), except Osmosis pools, which come from Osmosis itself and show liquidity only. It does not provide APY. APY only appears for a DefiLlama pool link, and only if DefiLlama allows it.</div>
       ${comms.some((c) => c.key === state.scope)
         ? html`<div class="fld"><span>Adding to</span><b>${CODE[comms.find((c) => c.key === state.scope).platform]} · ${comms.find((c) => c.key === state.scope).name}</b><input type="hidden" id="pool-community" value="${state.scope}"><div class="muted">To use a different community, change it at the top right.</div></div>`
         : html`<label class="fld"><span>Community</span><select id="pool-community"><option value="">Choose a community…</option>${comms.map((c) => html`<option value="${c.key}">${CODE[c.platform]} · ${c.name}</option>`)}</select></label>`}

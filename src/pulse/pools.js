@@ -89,7 +89,7 @@ export function parsePoolInput({ mode = 'pool', input, chain } = {}) {
     const evm = raw.match(EVM);
     if (evm) {
       let c = pickChain || chainOf(u.searchParams.get('chain') || '');
-      if (!c) c = chainOf(seg.find((s) => CHAIN_NAMES[chainOf(s)])) || (host.includes('pancakeswap') ? 'bsc' : host.includes('uniswap') ? 'ethereum' : '');
+      if (!c) c = chainOf(seg.find((s) => CHAIN_NAMES[chainOf(s)])) || (host.includes('pancakeswap') ? 'bsc' : host.includes('uniswap') ? 'ethereum' : host.includes('quickswap') ? 'polygon' : host.includes('aerodrome') ? 'base' : host.includes('velodrome') ? 'optimism' : host.includes('camelot') ? 'arbitrum' : '' /* pool-polish */);
       return c ? finish('pool', c, evm[0]) : { ok: false, error: `${NOT_SURE} Pick the chain from the list.` };
     }
     return { ok: false, error: NOT_SURE };
@@ -149,6 +149,7 @@ function normalizePair(p) {
 
 export async function readPool(item, { fetcher = fetchText, now = new Date() } = {}) {
   const at = now.toISOString();
+  if (item.kind === 'pair' && item.chain === 'osmosis') return readOsmosisPool(item, fetcher, at); // osmosis-sqs
   if (item.kind === 'pair') {
     let j;
     try { j = json(await fetchPoolText(`https://api.dexscreener.com/latest/dex/pairs/${enc(item.chain)}/${enc(item.address)}`, fetcher)); } catch (e) { throw friendly(e, 'That pool'); }
@@ -231,7 +232,7 @@ export function diffPool(item, prev, next, history = [], now = Date.now()) {
 /* ------------------------------------------------------------------ */
 
 /** Turns watched pools into searchable facts, so "what is the liquidity in our pool?" can be answered with a date. */
-export function poolChunks(items) {
+function poolChunksBase(items) { // osmosis-sqs: wrapped below
   const out = [];
   for (const p of items) {
     const s = p.snapshot;
@@ -250,4 +251,41 @@ export function poolChunks(items) {
     }
   }
   return out;
+}
+
+// osmosis-sqs: Osmosis pools are read from Osmosis's own public API, because DEX Screener does not carry Osmosis.
+// Only the pool's total liquidity (in USD) is available this way. Volume and price change are left empty,
+// and the rest of Sentinel already copes with that (it shows n/a and skips the trading-spike alert).
+async function readOsmosisPool(item, fetcher, at) {
+  let j;
+  try { j = json(await fetchPoolText(`https://sqs.osmosis.zone/pools?IDs=${enc(item.address)}`, fetcher)); }
+  catch (e) { throw friendlyOsmosis(e); }
+  const p = Array.isArray(j) ? j[0] : Array.isArray(j?.pools) ? j.pools[0] : null;
+  if (!p) throw new Error('Osmosis does not know a pool with that number. Check the pool number in the link.');
+  const cap = num(p.liquidity_cap);
+  const tvlUsd = String(p.liquidity_cap_error || '').trim() && !cap ? null : cap;
+  return {
+    id: `osmosis:${item.address}`, label: `Osmosis pool ${item.address}`, dex: 'osmosis', chain: 'osmosis', source: 'osmosis',
+    tvlUsd, volume24h: null, priceChange24h: null, txns24h: null, createdAt: null,
+    url: `https://app.osmosis.zone/pool/${enc(item.address)}`, at, kind: 'pair', apy: null
+  };
+}
+
+function friendlyOsmosis(e) {
+  if (isNetwork(e)) return new Error(`Could not reach Osmosis (${netCode(e) || 'network error'}). This is a connection problem on the server, not a problem with your pool. Try Check now again in a minute.`);
+  if (e.name === 'AbortError' || e.name === 'TimeoutError') return new Error('Osmosis took too long to respond. Your pool was not marked invalid. Try again shortly.');
+  if (e.status === 429) return new Error('Osmosis says too many requests. Wait a little and press Check now.');
+  if (e.status === 400 || e.status === 404) return new Error('Osmosis did not accept that pool number. Check it in the link.');
+  if (e.status === 401 || e.status === 403) return new Error('Osmosis refused the request. Try again later.');
+  if (e.status) return new Error(`Osmosis answered HTTP ${e.status}. Try again later.`);
+  return e;
+}
+
+// Facts that replies can use must name the right source and must not say "volume n/a".
+export function poolChunks(items) {
+  const list = (items || []).filter((p) => !(p.snapshot?.source === 'osmosis' && p.snapshot.tvlUsd == null));
+  const osmo = new Set(list.filter((p) => p.snapshot?.source === 'osmosis').map((p) => p.id));
+  return poolChunksBase(list).map((c) => (osmo.has(c.sourceId)
+    ? { ...c, text: c.text.replace(' and 24 hour trading volume about n/a', '').replace(' on osmosis (Osmosis)', ' on Osmosis').replace('Source: DEX Screener.', 'Source: Osmosis.') }
+    : c));
 }

@@ -46,8 +46,8 @@ const fake = (body) => async (url) => { fake.last = url; return typeof body === 
 const NOW = new Date('2026-10-08T10:00:00Z');
 
 test('a pool is read from DEX Screener into plain facts', async () => {
-  const s = await readPool({ kind: 'pair', chain: 'osmosis', address: '3505' }, { fetcher: fake({ pairs: [PAIR()] }), now: NOW });
-  assert.equal(fake.last, 'https://api.dexscreener.com/latest/dex/pairs/osmosis/3505');
+  const s = await readPool({ kind: 'pair', chain: 'base', address: '3505' }, { fetcher: fake({ pairs: [PAIR()] }), now: NOW }); // osmosis-sqs: Osmosis is no longer read from DEX Screener
+  assert.equal(fake.last, 'https://api.dexscreener.com/latest/dex/pairs/base/3505');
   assert.equal(s.label, 'OSMO/USDC'); assert.equal(s.tvlUsd, 4200000); assert.equal(s.volume24h, 250000); assert.equal(s.dex, 'osmosis'); assert.equal(s.apy, null);
 });
 
@@ -115,4 +115,32 @@ test('watched pools become dated facts that a question about liquidity can find'
   const hit = retrieve(chunks, 'what is the liquidity in our pool right now?');
   assert.equal(hit.length, 1);
   assert.deepEqual(poolChunks([{ id: 'p2', snapshot: null }]), [], 'a pool not read yet says nothing');
+});
+
+// osmosis-sqs
+test('an Osmosis pool is read from Osmosis, not DEX Screener', async () => {
+  const body = [{ chain_model: { id: 3505 }, liquidity_cap: '1234567', liquidity_cap_error: '', balances: [] }];
+  const s = await readPool({ kind: 'pair', chain: 'osmosis', address: '3505' }, { fetcher: fake(body), now: NOW });
+  assert.equal(fake.last, 'https://sqs.osmosis.zone/pools?IDs=3505');
+  assert.equal(s.tvlUsd, 1234567); assert.equal(s.dex, 'osmosis'); assert.equal(s.label, 'Osmosis pool 3505'); assert.equal(s.volume24h, null);
+  const c = poolChunks([{ id: 'p9', snapshot: s }]);
+  assert.equal(c.length, 1);
+  assert.match(c[0].text, /Osmosis pool 3505 on Osmosis: liquidity is about \$1\.23M, as of .*Source: Osmosis\./);
+  assert.ok(!/n\/a|DEX Screener/.test(c[0].text));
+  assert.deepEqual(poolChunks([{ id: 'p8', snapshot: { ...s, tvlUsd: null } }]), [], 'no liquidity figure, so nothing to say');
+  await assert.rejects(readPool({ kind: 'pair', chain: 'osmosis', address: '99999999' }, { fetcher: fake([]), now: NOW }), /does not know a pool/);
+  await assert.rejects(readPool({ kind: 'pair', chain: 'osmosis', address: '3505' }, { fetcher: fake(() => { const e = new Error('x'); e.status = 400; throw e; }), now: NOW }), /did not accept that pool number/);
+});
+
+// pool-polish
+test('links from QuickSwap, Aerodrome, Velodrome and Camelot find their chain without picking one', () => {
+  const a = '0x1111111111111111111111111111111111111111';
+  const chainFor = (u) => parsePoolInput({ input: u });
+  assert.deepEqual(chainFor(`https://quickswap.exchange/#/analytics/v3/pair/${a}`), { ok: true, kind: 'pair', chain: 'polygon', address: a });
+  assert.equal(chainFor(`https://aerodrome.finance/deposit?token0=x&pool=${a}`).chain, 'base');
+  assert.equal(chainFor(`https://velodrome.finance/deposit?pool=${a}`).chain, 'optimism');
+  assert.equal(chainFor(`https://camelot.exchange/pools/${a}`).chain, 'arbitrum');
+  assert.equal(chainFor(`https://pancakeswap.finance/info/v3/pairs/${a}`).chain, 'bsc');
+  assert.equal(chainFor(`https://app.uniswap.org/explore/pools/${a}`).chain, 'ethereum');
+  assert.equal(chainFor(`https://example.org/pool/${a}`).ok, false, 'an unknown site still asks for the chain');
 });

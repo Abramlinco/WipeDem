@@ -27,7 +27,7 @@ const hasBrief = (b) => !!(b && (b.projectName || b.about || b.facts?.length));
 const R = {
   // Everyday words such as "exit", "return" and "target" are not price talk on their own ("exit pathways", "receive LSTs in return").
   // They only count when they sit next to a price word ("exit price", "guaranteed returns").
-  price: /\b(prices?|pump|pumping|dump|dumping|moon|lambo|worth|buy|sell|invest|investment|100x|10x|prediction|predict|will it (go|reach|hit|rise)|how high|how low|profits?|price target|(entry|exit) (price|point)|(guaranteed|expected|investment) returns?)\b/i,
+  price: /\b(prices?|pump|pumping|dump|dumping|moon|lambo|invest|investment|(should|shall|can|must) (i|we|you) (buy|sell)|(time|moment) to (buy|sell)|(buy|sell) (now|more|the dip|before)|(is it|are they) worth|worth (it|buying|holding|investing|selling)|how much[^?.!]{0,20} worth|100x|10x|prediction|predict|will it (go|reach|hit|rise)|how high|how low|profits?|price target|(entry|exit) (price|point)|(guaranteed|expected|investment) returns?)\b/i,
   support: /\b(not working|doesn't work|isn't working|broken|bug|error|failed|stuck|can't|cannot|unable|lost|never (received|got)|refund|kyc|ticket|support|help me|wrong address|pending)\b/i,
   market: /\b(trending|trend|popping|news|market|narrative|what'?s (happening|new|hot|going on)|bitcoin|btc|ethereum|eth|solana|sol|bull|bear|web3|crypto|defi)\b/i,
   project: /\b(token|tokens|stake|staking|airdrop|roadmap|mainnet|testnet|tokenomics|vesting|listing|our project|the project|the team|governance|rewards?|pool|pools|apr|apy|liquidity)\b/i
@@ -188,7 +188,10 @@ export function templateDraft({ d, brief, parts }) {
   const pending = []; // things nobody has confirmed an answer to
   const usedKnow = new Set();
   let price = false, support = false, general = false;
-  const site = (brief.links || [])[0]?.url;
+  // reply-fixes: use the website, never a support or social link, and no link at all if there is none
+  const NOT_SITE = /support|ticket|help|discord|telegram|twitter|^x$|community|chat|forum|reddit|medium/i;
+  const siteLinks = (brief.links || []).filter((l) => !NOT_SITE.test(l.label || ''));
+  const site = (siteLinks.find((l) => /web|site|home|official/i.test(l.label || '')) || siteLinks[0])?.url || '';
   for (const p of parts) {
     if (p.primary === 'price') {
       if (price) continue; price = true;
@@ -225,7 +228,7 @@ export function templateDraft({ d, brief, parts }) {
     const cap = (l) => l.charAt(0).toUpperCase() + l.slice(1);
     return `Hi ${d.username}, here is where things stand:\n${lines.map((l) => `• ${cap(l)}`).join('\n')}`.trim();
   }
-  const body = lines.map((l, i) => (i === 0 ? l.charAt(0).toLowerCase() + l.slice(1) : l));
+  const body = lines.map((l, i) => (i === 0 && !/^I\b/.test(l) ? l.charAt(0).toLowerCase() + l.slice(1) : l));
   return `Hi ${d.username}, ${body.join(' ')}`.replace(/\s+/g, ' ').trim();
 }
 
@@ -282,7 +285,7 @@ function buildUser({ d, brief, facts, sources, routes, parts, know, context }) {
 /* Putting it together                                                 */
 /* ------------------------------------------------------------------ */
 
-export async function makeDraft({ discussion: d, brief, trends, knowledge = [], context = null }) {
+async function makeDraftCore({ discussion: d, brief, trends, knowledge = [], context = null }) { // safety-note: wrapped below by makeDraft
   const parts = analyseParts(d, brief, trends, knowledge);
   const routes = PRIORITY.filter((r) => parts.some((p) => p.routes.includes(r)));
   const primary = routes[0];
@@ -347,4 +350,46 @@ export function withinAllowance(key, limit) {
   if (recent.length >= limit) { draftLog.set(key, recent); return false; }
   recent.push(now); draftLog.set(key, recent);
   return true;
+}
+
+// safety-note: a short crypto safety line on every draft.
+// It is added in code after all the checks, not by the AI prompt, so it can never be forgotten,
+// reworded into a promise, or dropped when the built-in drafter takes over.
+const SAFE_SEED = [
+  'Never share your seed phrase, private keys or password with anyone, including admins.',
+  'Keep your wallet safe: never send your seed phrase or private keys to anyone, even if they say they are support.',
+  'Do not share your password, seed phrase or private keys, and ignore anyone who DMs you first offering help.'
+];
+const SAFE_DYOR = [
+  'Always DYOR (do your own research).',
+  'Please DYOR before making any decision with your funds.'
+];
+const SAFE_WALLET = 'Keep your wallet safe and only use official links.';
+const hashOf = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+
+export function withSafetyNote(text, { routes = [], seed = '' } = {}) {
+  const t = String(text || '').trim();
+  if (!t) return t;
+  const h = hashOf(seed || t);
+  const hasSeed = /\b(seed phrase|private keys?|recovery phrase|secret phrase|password)\b/i.test(t);
+  const hasDyor = /\b(dyor|do your own research|own research)\b/i.test(t);
+  const hasWallet = /keep your wallet safe/i.test(t);
+  const wantDyor = routes.some((r) => r === 'price' || r === 'market' || r === 'project');
+  const add = [];
+  if (!hasSeed) add.push(SAFE_SEED[h % SAFE_SEED.length]);
+  if (wantDyor && !hasDyor) add.push(SAFE_DYOR[h % SAFE_DYOR.length]);
+  // Replies that already carry a warning but are not about price, market or the project still get the wallet line.
+  if (!add.length && !hasWallet && !hasDyor) add.push(SAFE_WALLET);
+  if (!add.length) return t;
+  return `${t}${/\n•/.test(t) ? '\n\n' : ' '}${add.join(' ')}`;
+}
+
+export async function makeDraft(args) {
+  const r = await makeDraftCore(args);
+  const d = args?.discussion || {};
+  const text = withSafetyNote(r.text, { routes: r.routes, seed: `${d.username || ''}${d.text || ''}` });
+  if (text === r.text) return r;
+  const urls = [...(r.sources || []).map((s) => s.url), ...(r.knowledge || []).map((k) => k.url).filter(Boolean)];
+  // Flags are recomputed on the final text, so the manager sees exactly what the guard thinks of what will be posted.
+  return { ...r, text, safetyNote: true, flags: checkPolicy(text, args?.brief, urls) };
 }
