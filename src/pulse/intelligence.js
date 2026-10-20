@@ -9,6 +9,7 @@ import { config } from '../config.js';
 import { aiStatus, complete } from './ai/provider.js';
 import { checkPolicy, withinAllowance } from './reply.js';
 import { retrieve, tokenize } from './knowledge.js';
+import { draftFaqAnswer } from './faqdraft.js';
 import {
   isCandidate, clusterQuestions, fingerprint, findSimilarDraft, coverage,
   answersFor, NOTES, unsupportedFigures, isTechnicalIssue, groupIssues, splitMessage
@@ -73,31 +74,62 @@ export async function scanFaqGaps({ key, days = 30, brief = {}, communityName = 
   const created = [];
   let covered = 0, refreshed = 0;
 
-  const qualifying = clusterQuestions(rows)
-    .filter((c) => tokenize(c.rep.text).length)
-    .map((c) => ({ c, answers: answersFor(c) }))
-    // A question asked once with no answer and no sign of trouble is not worth a manager's time yet.
-    .filter(({ c, answers }) => c.items.length >= 2 || answers.length || c.category !== 'question')
+  const clusters = clusterQuestions(rows).filter((c) => tokenize(c.rep.text).length).map((c) => ({ c, answers: answersFor(c) }));
+  // A question asked fewer times than FAQ_MIN_ASKS, with no answer and no sign of trouble, waits until it is asked again.
+  const qualifying = clusters
+    .filter(({ c, answers }) => c.items.length >= config.faqMinAsks || answers.length || c.category !== 'question')
     .sort((a, b) => b.c.items.length - a.c.items.length);
+  let tooFew = clusters.length - qualifying.length, duplicate = 0, aiDrafted = 0;
+  const reasons = []; // why a question did not become a draft, so a missing FAQ is never a mystery
+  const skip = (c, reason) => { if (reasons.length < 40) reasons.push({ question: c.rep.text.slice(0, 90), reason }); if (config.pulseDebug) console.log(`[faq] skipped "${c.rep.text.slice(0, 60)}": ${reason}`); };
+  let aiLeft = aiStatus().mode !== 'none' ? config.faqAiPerScan : 0;
+
+  // Asks the AI for a PROPOSED answer. It is only ever stored on a pending draft; a person approves it.
+  const proposeWithAi = async (c) => {
+    if (aiLeft <= 0 || !withinAllowance(`${key}:faqgen`, config.draftsPerHour)) return null;
+    aiLeft--;
+    return draftFaqAnswer({ question: c.rep.text, variants: c.items.slice(1, 4).map((d) => d.text), brief, knowledge, complete });
+  };
 
   for (const { c, answers } of qualifying) {
     const evidence = c.items.slice(0, 8).map((d) => ({ platform: d.platform, channelName: d.channelName, username: d.username, text: d.text, createdAt: d.createdAt, url: chatLink(d), messageId: d.messageId }));
     const similar = findSimilarDraft(known, key, c.rep.text);
     if (similar) {
-      // Already raised. Keep it current, but never touch what the manager wrote.
-      if (similar.status === 'pending' && c.items.length > (similar.occurrenceCount || 0)) {
-        await updateFaqDraft(similar.id, keys, { occurrenceCount: c.items.length, evidence });
-        refreshed++;
+      duplicate++;
+      if (similar.status !== 'pending') { skip(c, `already ${similar.status} as an FAQ`); continue; }
+      // Already raised. Keep it current, but never touch what a person wrote.
+      const patch = {};
+      if (c.items.length > (similar.occurrenceCount || 0)) { patch.occurrenceCount = c.items.length; patch.evidence = evidence; }
+      // A draft that is still empty can be filled: first from a moderator reply that arrived since, otherwise by the AI.
+      // A draft with any text in it, including one a manager typed, is never replaced.
+      if (!String(similar.answer || '').trim()) {
+        if (answers.length) {
+          const tidy = (await tidyAnswer({ key, question: c.rep.text, answers, brief })) || answers[0];
+          Object.assign(patch, { answer: tidy.slice(0, 5000), basis: 'moderator', moderatorAnswers: answers.slice(0, 8), verificationNote: NOTES.moderator });
+        } else if ((similar.aiTried ?? -1) < c.items.length) {
+          const r = await proposeWithAi(c);
+          if (r) {
+            patch.aiTried = c.items.length;
+            if (r.answer) { Object.assign(patch, { answer: r.answer.slice(0, 5000), basis: r.basis, verificationNote: NOTES[r.basis] }); aiDrafted++; }
+            else if (r.note) patch.verificationNote = r.note;
+          }
+        }
       }
+      if (Object.keys(patch).length) { await updateFaqDraft(similar.id, keys, patch); refreshed++; }
       continue;
     }
     const cov = coverage(c.rep.text, { knowledge, brief });
-    if (cov.covered) { covered++; continue; }
-    if (created.length >= MAX_NEW_PER_SCAN) continue;
+    if (cov.covered) { covered++; skip(c, `your ${cov.via === 'brief' ? 'project brief' : `knowledge bank ("${cov.title || 'document'}")`} already speaks to it`); continue; }
+    if (created.length >= MAX_NEW_PER_SCAN) { skip(c, 'scan limit reached, it will be picked up next time'); continue; }
 
     let answer = answers[0] || '';
     let basis = answer ? 'moderator' : 'none';
+    let note = '', aiTried;
     if (answer) answer = (await tidyAnswer({ key, question: c.rep.text, answers, brief })) || answer;
+    else {
+      const r = await proposeWithAi(c);
+      if (r) { answer = r.answer; basis = r.basis; note = r.note; if (r.tried) aiTried = c.items.length; if (r.answer) aiDrafted++; }
+    }
     const rec = await addFaqDraft({
       id: crypto.randomUUID(), communityKey: key, communityName: c.rep.communityName || communityName,
       topic: c.topic, question: c.rep.text.slice(0, 1200), answer: answer.slice(0, 5000), basis,
@@ -105,12 +137,13 @@ export async function scanFaqGaps({ key, days = 30, brief = {}, communityName = 
       moderatorAnswers: answers.slice(0, 8), evidence,
       sources: [...new Map(retrieve(knowledge, c.rep.text, { k: 3 }).filter((k) => k.url).map((k) => [k.url, { title: k.title || 'Knowledge source', url: k.url }])).values()],
       occurrenceCount: c.items.length, status: 'pending', fingerprint: fingerprint(c.topic, c.rep.text),
-      verificationNote: NOTES[basis], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      ...(aiTried !== undefined ? { aiTried } : {}),
+      verificationNote: note || NOTES[basis], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     });
     known.push(rec);
     created.push(rec);
   }
-  return { scanned: rows.length, created: created.length, covered, refreshed, drafts: listFaqDrafts(keys) };
+  return { scanned: rows.length, created: created.length, covered, refreshed, aiDrafted, tooFew, duplicate, reasons, drafts: listFaqDrafts(keys) };
 }
 
 /* ------------------------------------------------------------------ */

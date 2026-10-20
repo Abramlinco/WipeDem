@@ -153,9 +153,12 @@ export const findSimilarDraft = (drafts, communityKey, question, threshold = 0.6
 export function coverage(question, { knowledge = [], brief = {} } = {}) {
   const q = [...new Set(tokenize(question))];
   if (!q.length) return { covered: false, via: null };
-  const need = Math.min(2, q.length);
-  const hit = retrieve(knowledge, question, { k: 1 })[0];
-  if (hit && hit.matched >= need) return { covered: true, via: 'knowledge', title: hit.title || '', score: hit.score };
+  // A long, jargon-heavy question shares a couple of words with almost any document about the same topic,
+  // so the bar grows with the question: short questions need 2 shared words, long ones need about 40%
+  // of their words (at most 6). "Already covered" must mean the documents really speak to the question.
+  const need = Math.min(q.length, Math.min(6, Math.max(2, Math.ceil(q.length * 0.4))));
+  const hit = retrieve(knowledge, question, { k: 3 }).find((h) => h.matched >= need);
+  if (hit) return { covered: true, via: 'knowledge', title: hit.title || '', score: hit.score };
   for (const f of brief.facts || []) {
     const ft = new Set(tokenize(f));
     if (q.filter((w) => ft.has(w)).length >= need) return { covered: true, via: 'brief', title: 'Project brief' };
@@ -183,8 +186,13 @@ export const PLACEHOLDER = /no moderator answer was captured/i;
 export const NOTES = {
   moderator: 'Taken from a moderator reply in the chat. Check it is still correct before approving.',
   none: 'Nothing in your facts covers this and nobody has answered it in the chat. Write the verified answer yourself before approving.',
-  manager: 'Written or edited by the manager.'
+  manager: 'Written or edited by the manager.',
+  'ai-knowledge': 'AI proposed answer, written from your uploaded documents and the question. NOT verified. Read it against your documents, edit anything that is wrong, then approve.',
+  'ai-general': 'AI proposed answer from general crypto knowledge. Your documents do not cover this, so NOTHING here is confirmed for your project. Check it, edit it, and approve only if it is right.'
 };
+
+/** An answer an AI wrote and no person has changed yet. It can only be approved after an explicit confirmation. */
+export const isAiBasis = (basis) => basis === 'ai-knowledge' || basis === 'ai-general';
 
 /* ------------------------------------------------------------------ */
 /* Figures must come from evidence                                     */

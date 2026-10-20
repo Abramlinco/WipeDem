@@ -11,7 +11,7 @@ import { platforms } from '../platform.js';
 import { makeDraft, checkPolicy, withinAllowance } from '../pulse/reply.js';
 import { buildContext } from '../pulse/context.js';
 import { scanFaqGaps, generateTechnicalReport, deliverReport, chatLink } from '../pulse/intelligence.js';
-import { unsupportedFigures, PLACEHOLDER as NO_ANSWER, NOTES } from '../pulse/faqlogic.js';
+import { unsupportedFigures, PLACEHOLDER as NO_ANSWER, NOTES, isAiBasis } from '../pulse/faqlogic.js';
 import { applyFocus, focusKeywords, PRESETS } from '../pulse/focus.js';
 import { aiStatus, complete } from '../pulse/ai/provider.js';
 import { retrieve, bestSentences, SLUG, defiLlamaLink, LIMITS, searchProjects } from '../pulse/knowledge.js';
@@ -652,13 +652,13 @@ pulseRouter.get('/faq-intelligence', (req, res) => {
 // One scan across every community the manager runs, so the FAQs page can be a single view.
 pulseRouter.post('/faq-intelligence/scan', async (req, res) => {
   const days = toInt(req.body?.days, 1, 90, 30);
-  const total = { communities: 0, scanned: 0, created: 0, covered: 0, refreshed: 0 };
+  const total = { communities: 0, scanned: 0, created: 0, covered: 0, refreshed: 0, aiDrafted: 0, tooFew: 0, duplicate: 0 };
   for (const c of req.access.communities) {
     const settings = await getSettings(c.platform, c.id);
     if (settings.intelEnabled === false) continue; // reading is switched off for this community
     const r = await scanFaqGaps({ key: c.key, days, brief: settings.brief, communityName: c.name });
     total.communities++;
-    for (const k of ['scanned', 'created', 'covered', 'refreshed']) total[k] += r[k];
+    for (const k of ['scanned', 'created', 'covered', 'refreshed', 'aiDrafted', 'tooFew', 'duplicate']) total[k] += r[k] || 0;
   }
   res.json({ ...total, drafts: listFaqDrafts(req.access.keys) });
 });
@@ -722,6 +722,11 @@ pulseRouter.patch('/faq-intelligence/:id', async (req, res) => {
   if (next.status === 'approved') {
     const answer = String(next.answer || '').trim();
     if (answer.length < 10 || NO_ANSWER.test(answer)) return res.status(400).json({ error: 'Write the verified answer first. An FAQ without a real answer cannot go into your facts.' });
+    // An answer an AI wrote and nobody has changed can never be approved by accident. A person has to say they read it.
+    // Editing the answer makes the person its author (basis becomes 'manager' above), which counts as their review.
+    if (isAiBasis(next.basis) && req.body?.confirmed !== true) {
+      return res.status(409).json({ needsReview: true, error: `${NOTES[next.basis]}\n\nApprove it into your facts anyway?` });
+    }
     // A figure that appears nowhere in the chat or the facts has to be confirmed by a person. An answer the manager wrote is theirs to vouch for.
     if (next.basis !== 'manager') {
       const unverified = unsupportedFigures(answer, faqEvidence(next));

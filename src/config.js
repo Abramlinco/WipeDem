@@ -40,7 +40,11 @@ export const config = {
   draftsPerHour: Math.min(Math.max(Number(process.env.DRAFTS_PER_HOUR) || 60, 5), 1000),
   // The watcher reads every connected community on its own: it drafts FAQs for gaps in the facts and sends scheduled technical reports.
   pulseWatch: process.env.PULSE_WATCH !== 'false',
-  watchMinutes: Math.min(Math.max(Number(process.env.PULSE_WATCH_MINUTES) || 30, 5), 1440)
+  watchMinutes: Math.min(Math.max(Number(process.env.PULSE_WATCH_MINUTES) || 30, 5), 1440),
+  // FAQs Intelligence: how many times a question must be asked before it becomes a draft (1 = every uncovered question).
+  faqMinAsks: Math.min(Math.max(Number(process.env.FAQ_MIN_ASKS) || 1, 1), 10),
+  // How many AI written proposals one scan may request, to stay inside free-tier limits.
+  faqAiPerScan: Math.min(Math.max(Number(process.env.FAQ_AI_PER_SCAN) || 8, 0), 50)
 };
 // Which engine drafts replies. AI_PROVIDER can force one (none, openai, anthropic),
 // otherwise the first one that has a key wins, and with no keys it is "none".

@@ -61,6 +61,7 @@ async function api(path, { method = 'GET', body } = {}) {
     err.status = res.status;
     err.flags = body.flags;
     err.unverified = body.unverified;
+    err.needsReview = body.needsReview;
     throw err;
   }
   return res.json();
@@ -783,7 +784,7 @@ const faqPlatform = (r) => String(r.communityKey || '').split(':')[0];
 function faqCard(r) {
   const plat = faqPlatform(r);
   const where = [...new Set((r.evidence || []).map((e) => e.channelName).filter(Boolean))].slice(0, 3).join(', ');
-  return html`<div class="panel"><div class="panelhead"><h2>FAQ draft · ${r.topic} <span>${r.occurrenceCount} report(s) · ${r.status}</span></h2><span>${r.gap ? html`<span class="tag">Not in your facts</span> ` : ''}${r.category === 'technical' || r.category === 'complaint' ? html`<span class="tag">${r.category}</span>` : ''}</span></div><div class="pad"><p class="muted"><span class="tag info">${PLATFORM_NAME[plat] || plat}</span> ${r.communityName || ''}${where ? ` · ${where}` : ''}</p><p><b>Question:</b> ${r.question}</p><label class="fld"><span>Proposed answer</span><textarea data-faq-answer="${r.id}" rows="5" placeholder="Write the verified answer here">${r.answer}</textarea></label><p class="muted">${r.verificationNote||''}</p><details><summary>Evidence (${r.evidence?.length||0})</summary>${(r.evidence||[]).map(e=>html`<p class="muted">${PLATFORM_NAME[e.platform] || e.platform} · ${e.channelName}: ${e.text} ${e.url?html`<a href="${e.url}" target="_blank" rel="noopener">Open message</a>`:''}</p>`)}</details><details><summary>Sources (${r.sources?.length||0})</summary>${(r.sources||[]).map(x=>html`<p><a href="${x.url}" target="_blank" rel="noopener">${x.title}</a></p>`)}</details><div class="tools">${r.status === 'approved' ? html`<button class="btn primary" data-act="faq-approve" data-id="${r.id}">Update in Facts</button><button class="btn" data-act="faq-dismiss" data-id="${r.id}">Remove from Facts</button>` : r.status === 'dismissed' ? html`<button class="btn" data-act="faq-approve" data-id="${r.id}">Approve into Facts</button>` : html`<button class="btn primary" data-act="faq-approve" data-id="${r.id}">Approve into Facts</button><button class="btn" data-act="faq-save" data-id="${r.id}">Save edits</button><button class="btn" data-act="faq-dismiss" data-id="${r.id}">Dismiss</button>`}</div></div></div>`;
+  return html`<div class="panel"><div class="panelhead"><h2>FAQ draft · ${r.topic} <span>${r.occurrenceCount} report(s) · ${r.status}</span></h2><span>${r.gap ? html`<span class="tag">Not in your facts</span> ` : ''}${r.basis === 'ai-knowledge' || r.basis === 'ai-general' ? html`<span class="tag">AI draft · needs your review</span> ` : ''}${r.category === 'technical' || r.category === 'complaint' ? html`<span class="tag">${r.category}</span>` : ''}</span></div><div class="pad"><p class="muted"><span class="tag info">${PLATFORM_NAME[plat] || plat}</span> ${r.communityName || ''}${where ? ` · ${where}` : ''}</p><p><b>Question:</b> ${r.question}</p><label class="fld"><span>Proposed answer</span><textarea data-faq-answer="${r.id}" rows="5" placeholder="Write the verified answer here">${r.answer}</textarea></label><p class="muted">${r.verificationNote||''}</p><details><summary>Evidence (${r.evidence?.length||0})</summary>${(r.evidence||[]).map(e=>html`<p class="muted">${PLATFORM_NAME[e.platform] || e.platform} · ${e.channelName}: ${e.text} ${e.url?html`<a href="${e.url}" target="_blank" rel="noopener">Open message</a>`:''}</p>`)}</details><details><summary>Sources (${r.sources?.length||0})</summary>${(r.sources||[]).map(x=>html`<p><a href="${x.url}" target="_blank" rel="noopener">${x.title}</a></p>`)}</details><div class="tools">${r.status === 'approved' ? html`<button class="btn primary" data-act="faq-approve" data-id="${r.id}">Update in Facts</button><button class="btn" data-act="faq-dismiss" data-id="${r.id}">Remove from Facts</button>` : r.status === 'dismissed' ? html`<button class="btn" data-act="faq-approve" data-id="${r.id}">Approve into Facts</button>` : html`<button class="btn primary" data-act="faq-approve" data-id="${r.id}">Approve into Facts</button><button class="btn" data-act="faq-save" data-id="${r.id}">Save edits</button><button class="btn" data-act="faq-dismiss" data-id="${r.id}">Dismiss</button>`}</div></div></div>`;
 }
 
 async function loadFaqIntelligence() {
@@ -852,7 +853,7 @@ async function saveFaq(id, status) {
   for (;;) {
     try { await api(`/pulse/faq-intelligence/${enc(id)}`, {method:'PATCH',body:{answer,status,confirmed}}); break; }
     // A figure that is not in the chat evidence or your facts needs a person to vouch for it.
-    catch (e) { if (e.status === 409 && e.unverified && !confirmed && confirm(e.message)) { confirmed = true; continue; } throw e; }
+    catch (e) { if (e.status === 409 && (e.unverified || e.needsReview) && !confirmed && confirm(e.message)) { confirmed = true; continue; } throw e; }
   }
   toast(status==='approved'?'FAQ approved into Facts':status==='dismissed'?'FAQ dismissed and removed from Facts':'FAQ saved');
   await loadFaqIntelligence(); updateBadges();

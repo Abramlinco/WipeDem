@@ -1,0 +1,620 @@
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/.gitignore b/.gitignore
+--- a/.gitignore	2026-10-20 06:58:54.091501039 +0000
++++ b/.gitignore	2026-10-20 06:59:17.760216268 +0000
+@@ -10,3 +10,12 @@
+ sentinel-surgical-patch.js
+ *patch*.zip
+ *patch*.js
++
++# Leftovers from patching (fix-5)
++*.bak
++*.bak-*
++*.before-*
++*.orig
++*.rej
++*.patch
++apply-*.mjs
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/FAQ-APPROVAL-FIX.md b/FAQ-APPROVAL-FIX.md
+--- a/FAQ-APPROVAL-FIX.md	2026-10-20 06:58:54.091587615 +0000
++++ b/FAQ-APPROVAL-FIX.md	1970-01-01 00:00:00.000000000 +0000
+@@ -1,32 +0,0 @@
+-# FAQs Intelligence, Facts and Technical Push
+-
+-How the pieces fit, and the rules the code enforces.
+-
+-## Two kinds of facts
+-1. **Facts (the knowledge bank).** Documents, pages, live data and approved FAQs. The reply drafter reads the member's
+-   message, retrieves matching facts and drafts a reply for the community manager.
+-2. **FAQs Intelligence.** Reads the chats, checks every recurring question, complaint or error against the facts, and
+-   drafts an FAQ **only for what the facts do not cover**. The menu shows how many drafts are waiting. Approving a draft
+-   sends it into the facts. Dismissing an approved FAQ takes it back out.
+-
+-**Technical Push** summarises technical complaints and errors into a report that can be downloaded or sent to the
+-technical team, on demand or on a schedule (set Delivery to "Send to channel").
+-
+-## Nothing is invented
+-- An FAQ answer is a moderator reply from the chat, or text the manager wrote. With neither, the answer is empty and
+-  the FAQ cannot be approved.
+-- A number, fee or percentage in an FAQ answer that appears nowhere in the chat evidence or the facts must be confirmed
+-  by a person before approval (HTTP 409 with `unverified`, then resend with `confirmed: true`).
+-- An AI reply draft or AI technical report that contains a figure missing from its evidence is discarded and the
+-  built-in version is used.
+-- AI may only reword a moderator's reply into a tidy FAQ answer, and only if it adds no figure, link or policy problem.
+-
+-## How an approved FAQ is found
+-The indexed text is the approved answer only. The question is stored in `search`, which retrieval matches but replies
+-never quote. The internal verification note is not indexed.
+-
+-## The watcher
+-Every `PULSE_WATCH_MINUTES` (default 30) the watcher visits each community with conversations, skips those with reading
+-switched off, runs the FAQ gap scan, and sends any scheduled Technical Push reports. `PULSE_WATCH=false` turns it off.
+-The drafter also receives a short, recorded-only picture of the community (top topics, problems in the latest report,
+-open gaps) as background, and every draft reports `basis` (knowledge, brief or none) and `relatedIssues`.
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/dashboard/app.js b/dashboard/app.js
+--- a/dashboard/app.js	2026-10-20 06:58:54.092141154 +0000
++++ b/dashboard/app.js	2026-10-20 06:59:17.760216268 +0000
+@@ -48,7 +48,7 @@
+   t.textContent = msg;
+   t.className = `toast show${isErr ? ' err' : ''}`;
+   clearTimeout(toastTimer);
+-  toastTimer = setTimeout(() => { t.className = 'toast'; }, 2800);
++  toastTimer = setTimeout(() => { t.className = 'toast'; }, isErr ? 8000 : 2800); // fix-5: errors stay long enough to read
+ }
+ 
+ async function api(path, { method = 'GET', body } = {}) {
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/dashboard/pulse.js b/dashboard/pulse.js
+--- a/dashboard/pulse.js	2026-10-20 06:58:54.093144697 +0000
++++ b/dashboard/pulse.js	2026-10-20 06:59:17.760216268 +0000
+@@ -628,7 +628,8 @@
+     el.disabled = true; el.textContent = 'Reading…';
+     try {
+       const r = await api(`/pulse/pools/${platform}/${enc(rest.join(':'))}`, { method: 'POST', body: { mode: $('#pool-mode').value, input, chain: $('#pool-chain').value } });
+-      if (r.result.ok) toast('Added. Pulse will tell you when it changes.');
++      if (r.result.pending) { toast('Added. The data service is slow, so Pulse is still reading it. This page will update.'); setTimeout(() => { if (location.hash.startsWith('#/pulse/pools')) reloadPulse(); }, 15000); }
++      else if (r.result.ok) toast('Added. Pulse will tell you when it changes.');
+       else toast(`Added, but it could not be read yet: ${r.result.error}`, true);
+     } finally { await reloadPulse(); }
+   },
+@@ -636,7 +637,8 @@
+     el.disabled = true; el.textContent = 'Checking…';
+     try {
+       const r = await api(`/pulse/pools/${el.dataset.platform}/${enc(el.dataset.community)}/${enc(el.dataset.id)}/refresh`, { method: 'POST' });
+-      toast(r.result.ok ? (r.result.events ? 'Checked. Something changed.' : 'Checked. No change worth reporting.') : `Could not read it: ${r.result.error}`, !r.result.ok);
++      if (r.result.pending) setTimeout(() => { if (location.hash.startsWith('#/pulse/pools')) reloadPulse(); }, 15000);
++      toast(r.result.pending ? 'Still checking. The result will appear shortly.' : r.result.ok ? (r.result.events ? 'Checked. Something changed.' : 'Checked. No change worth reporting.') : `Could not read it: ${r.result.error}`, !r.result.ok);
+     } finally { await reloadPulse(); }
+   },
+   'pool-del': async (el) => {
+@@ -774,7 +776,7 @@
+   const a = document.activeElement;
+   if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+   reloadPulse();
+-}, 20000);
++}, 10000); // fix-5: was 20 seconds
+ 
+ 
+ /* =====================================================================
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/docs/faq-intelligence.md b/docs/faq-intelligence.md
+--- a/docs/faq-intelligence.md	1970-01-01 00:00:00.000000000 +0000
++++ b/docs/faq-intelligence.md	2026-10-20 06:59:17.760216268 +0000
+@@ -0,0 +1,40 @@
++# FAQs Intelligence, Facts and Technical Push
++
++How the pieces fit, and the rules the code enforces.
++
++## Two kinds of facts
++1. **Facts (the knowledge bank).** Documents, pages, live data and approved FAQs. The reply drafter reads the member's
++   message, retrieves matching facts and drafts a reply for the community manager.
++2. **FAQs Intelligence.** Reads the chats, checks every recurring question, complaint or error against the facts, and
++   drafts an FAQ **only for what the facts do not cover**. The menu shows how many drafts are waiting. Approving a draft
++   sends it into the facts. Dismissing an approved FAQ takes it back out.
++
++**Technical Push** summarises technical complaints and errors into a report that can be downloaded or sent to the
++technical team, on demand or on a schedule (set Delivery to "Send to channel").
++
++## Nothing is invented
++- An FAQ answer is a moderator reply from the chat, or text the manager wrote. With neither, the answer is empty and
++  the FAQ cannot be approved.
++- A number, fee or percentage in an FAQ answer that appears nowhere in the chat evidence or the facts must be confirmed
++  by a person before approval (HTTP 409 with `unverified`, then resend with `confirmed: true`).
++- An AI reply draft or AI technical report that contains a figure missing from its evidence is discarded and the
++  built-in version is used.
++- AI may only reword a moderator's reply into a tidy FAQ answer, and only if it adds no figure, link or policy problem.
++
++## How an approved FAQ is found
++The indexed text is the approved answer only. The question is stored in `search`, which retrieval matches but replies
++never quote. The internal verification note is not indexed.
++
++## The watcher
++Every `PULSE_WATCH_MINUTES` (default 30) the watcher visits each community with conversations, skips those with reading
++switched off, runs the FAQ gap scan, and sends any scheduled Technical Push reports. `PULSE_WATCH=false` turns it off.
++The drafter also receives a short, recorded-only picture of the community (top topics, problems in the latest report,
++open gaps) as background, and every draft reports `basis` (knowledge, brief or none) and `relatedIssues`.
++
++## What makes something an FAQ draft (fix-5)
++- At least **two different members** asked it (one person repeating is one member), or a moderator already gave a
++  real answer. "thanks", "lol", "DM me" and one-word replies are not answers.
++- Price chatter ("wen moon") and messages asking anyone to share a seed phrase or private key never become drafts.
++- "I can't wait", "can't believe" and "missing out" are not problems, in FAQs or in Technical Push.
++- A community never has more than 40 drafts waiting, and one scan adds at most 10.
++- The automatic watcher does nothing for a community with no facts yet. The Scan button still works.
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/package.json b/package.json
+--- a/package.json	2026-10-20 06:58:54.094966879 +0000
++++ b/package.json	2026-10-20 06:59:17.760216268 +0000
+@@ -3,7 +3,7 @@
+   "version": "0.9.0",
+   "private": true,
+   "type": "module",
+-  "description": "Anti impersonation and scam detection for Web3 communities on Telegram and Discord, with a shared cross project ban network and a web dashboard.",
++  "description": "Community management for Web3 communities on Telegram and Discord: scam and impersonation protection, Pulse (ideas, questions, FAQs, technical reports, campaigns) and a web dashboard.",
+   "scripts": {
+     "dev": "node src/index.js",
+     "start": "node src/index.js",
+@@ -17,5 +17,8 @@
+     "lowdb": "^7.0.1",
+     "nanoid": "^5.0.7",
+     "node-telegram-bot-api": "^0.66.0"
++  },
++  "engines": {
++    "node": ">=18"
+   }
+-}
+\ No newline at end of file
++}
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/src/api/pulse.js b/src/api/pulse.js
+--- a/src/api/pulse.js	2026-10-20 06:58:54.095133478 +0000
++++ b/src/api/pulse.js	2026-10-20 06:59:17.760216268 +0000
+@@ -598,6 +598,14 @@
+   };
+ }
+ 
++// fix-5: reading a pool can take half a minute when the data service is slow. Wait a few seconds so a wrong
++// link still shows straight away, then answer and let the read finish in the background.
++async function quickRefresh(item) {
++  let timer;
++  const slow = new Promise((resolve) => { timer = setTimeout(() => resolve({ ok: true, pending: true }), 8000); });
++  try { return await Promise.race([refreshPoolItem(item), slow]); } finally { clearTimeout(timer); }
++}
++
+ pulseRouter.get('/pools', (req, res) => {
+   const keys = scopeKeys(req);
+   const names = namesOf(req);
+@@ -616,7 +624,7 @@
+   if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+   let rec;
+   try { rec = await addPoolItem(key, { kind: parsed.kind, chain: parsed.chain, address: parsed.address, label: '', url: '' }); } catch (e) { return res.status(400).json({ error: e.message }); }
+-  const result = await refreshPoolItem(rec); // read it now, so a wrong link shows straight away
++  const result = await quickRefresh(rec); // fix-5
+   res.json({ item: poolView(getPoolItem(rec.id, new Set([key])), namesOf(req)), result });
+ });
+ 
+@@ -625,7 +633,7 @@
+   const p = getPoolItem(req.params.id, new Set([key]));
+   if (!p) return res.status(404).json({ error: 'Not found' });
+   if (p.lastTried && Date.now() - new Date(p.lastTried).getTime() < 60000) return res.status(429).json({ error: 'Just checked a moment ago. Try again in a minute.' });
+-  const result = await refreshPoolItem(p);
++  const result = await quickRefresh(p); // fix-5
+   res.json({ item: poolView(getPoolItem(p.id, new Set([key])), namesOf(req)), result });
+ });
+ 
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/src/index.js b/src/index.js
+--- a/src/index.js	2026-10-20 06:58:54.096035336 +0000
++++ b/src/index.js	2026-10-20 06:59:17.760216268 +0000
+@@ -23,6 +23,11 @@
+   console.warn('[WARNING] The dashboard is reachable from the network but PUBLIC_URL is not https. Put it behind HTTPS before real admins sign in.');
+ }
+ 
++// fix-5: an AI service that is only half set up quietly falls back to the built-in drafter.
++if ((config.aiBaseUrl || config.aiKey) && config.aiProvider === 'none' && !config.anthropicKey && (process.env.AI_PROVIDER || '').toLowerCase() !== 'none') {
++  console.warn('[WARNING] AI_BASE_URL or AI_API_KEY is set but AI_MODEL is missing, so replies use the built-in drafter, not your AI service.');
++}
++
+ // Save the message counters every few seconds, not on every message.
+ setInterval(() => flushStats().catch(e => console.error('[stats]', e.message)), 15000);
+ 
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/src/pulse/ai/provider.js b/src/pulse/ai/provider.js
+--- a/src/pulse/ai/provider.js	2026-10-20 06:58:54.096098874 +0000
++++ b/src/pulse/ai/provider.js	2026-10-20 06:59:17.760216268 +0000
+@@ -17,7 +17,17 @@
+ }
+ const hostOf = (u) => { try { return new URL(u).host; } catch { return 'custom service'; } };
+ 
++// fix-5: free tiers (Groq, Gemini) answer 429 when busy. Wait a moment and try once more before giving up.
+ async function post(url, headers, body) {
++  try { return await postOnce(url, headers, body); }
++  catch (e) {
++    if (e.status !== 429) throw e;
++    await new Promise((resolve) => setTimeout(resolve, 2500));
++    return postOnce(url, headers, body);
++  }
++}
++
++async function postOnce(url, headers, body) {
+   const ctl = new AbortController();
+   const timer = setTimeout(() => ctl.abort(), 30000);
+   try {
+@@ -25,7 +35,8 @@
+     const text = await res.text();
+     if (!res.ok) {
+       // Never put the key or the whole response in the message, only the status.
+-      throw new Error(res.status === 401 || res.status === 403 ? 'The AI key was refused. Check it in .env.'
++      const aiFail = (m) => Object.assign(new Error(m), { status: res.status }); // fix-5
++      throw aiFail(res.status === 401 || res.status === 403 ? 'The AI key was refused. Check it in .env.'
+         : res.status === 429 ? 'The AI service says the limit was reached. Try again in a minute.'
+         : `The AI service answered ${res.status}.`);
+     }
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/src/pulse/analyze.js b/src/pulse/analyze.js
+--- a/src/pulse/analyze.js	2026-10-20 06:58:54.096110366 +0000
++++ b/src/pulse/analyze.js	2026-10-20 06:59:17.756216268 +0000
+@@ -22,6 +22,10 @@
+ const CONCERN = /\b(not working|doesn't work|does not work|isn't working|broken|bug|buggy|bugs|bugged|glitch|glitches|error|errors|failed|failing|fails?|failures?|crash(es|ed|ing)?|freez(es|ing)|froze(n)?|tim(e[ds]?|ing) ?outs?|reverted|nothing happens|won't (load|work|connect|sync|go through|confirm|open|send)|not (loading|showing|appearing|syncing|connecting|updating|responding|confirming)|(doesn't|does not|didn't|did not) (load|show|appear|sync|connect|update|respond|go through|confirm)|(is|are) down|having (an? )?(issues?|problems?|trouble)|keeps? (crashing|failing|freezing|disconnecting)|stuck|can't|cannot|unable to|too (slow|expensive|high|low|late|confusing)|disappointed|frustrat\w+|annoying|worried|concern(ed)?|scared|unfair|misleading|no (response|reply|update|communication)|ignored|where is|still waiting|rug|rugged|scam|lost (my|our)|never (received|got|arrived)|fees? (are|is) (too|so|insane|crazy))\b/i;
+ const PRAISE = /\b(love (it|this|the|how)|great (job|work|update|team|project)|awesome|amazing|well done|thank you|thanks (for|team|guys)|good (job|work|update)|impressed|bullish|best (project|community|team))\b/i;
+ 
++// fix-5: harmless phrases that contain a failure word ("can't wait", "missing out") must not read as a problem.
++export const BENIGN = /\b(can'?t|cannot) (wait|believe|stop|help|get enough|imagine|thank)\b|\bmissing out\b/gi;
++// fix-5: ways people describe a broken wallet or app that the main CONCERN list did not cover.
++const BROKEN_MORE = /\b((does|do|did) nothing|nothing (works|loads)|won'?t (sign|approve|launch|submit|accept)|(still )?pending (for|since)|stuck pending|wrong (balance|amount)|(balance|amount) (is |was )?(wrong|zero))\b/i;
+ const POSITIVE = ['love', 'great', 'awesome', 'amazing', 'good', 'nice', 'excellent', 'bullish', 'excited', 'happy', 'thanks', 'thank', 'helpful', 'smooth', 'fast', 'best', 'impressed', 'perfect', 'win', 'wow'];
+ const NEGATIVE = ['bad', 'broken', 'bug', 'slow', 'scam', 'rug', 'worst', 'disappointed', 'angry', 'frustrated', 'annoying', 'worried', 'fail', 'failed', 'terrible', 'awful', 'hate', 'unfair', 'stuck', 'lost', 'error', 'dump', 'bearish', 'ignored'];
+ 
+@@ -43,7 +47,7 @@
+   airdrop: ['airdrop', 'airdrops', 'drop'], staking: ['stake', 'staking', 'staked', 'unstake'],
+   nft: ['nft', 'nfts'], token: ['token', 'tokens', 'coin', 'coins'], tokenomics: ['tokenomics', 'supply', 'emission'],
+   listing: ['listing', 'listed', 'binance', 'coinbase', 'cex', 'exchange'], mainnet: ['mainnet', 'testnet', 'launch'],
+-  bridge: ['bridge', 'bridging'], wallet: ['wallet', 'metamask', 'phantom', 'ledger'], fees: ['fee', 'fees', 'gas'],
++  bridge: ['bridge', 'bridging'], wallet: ['wallet', 'wallets', 'metamask', 'phantom', 'ledger', 'keplr', 'kepler', 'cosmostation', 'rabby'], fees: ['fee', 'fees', 'gas'],
+   liquidity: ['liquidity', 'lp', 'pool', 'pools'], dex: ['dex', 'swap', 'swaps', 'uniswap'], roadmap: ['roadmap', 'milestone', 'milestones'],
+   governance: ['governance', 'dao', 'proposal', 'vote', 'voting', 'snapshot'], whitelist: ['whitelist', 'allowlist', 'wl'],
+   mint: ['mint', 'minting', 'minted'], vesting: ['vesting', 'unlock', 'unlocks', 'cliff'], rewards: ['reward', 'rewards', 'yield', 'apy', 'farming'],
+@@ -102,7 +106,7 @@
+ 
+   let kind = null;
+   if (has(IDEA, text)) kind = 'idea';
+-  else if (has(CONCERN, text)) kind = 'concern';
++  else if (has(CONCERN, text.replace(BENIGN, ' ')) || has(BROKEN_MORE, text)) kind = 'concern'; // fix-5
+   else if (isQuestion) kind = 'question';
+   else if (has(PRAISE, text)) kind = 'praise';
+ 
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/src/pulse/faqlogic.js b/src/pulse/faqlogic.js
+--- a/src/pulse/faqlogic.js	2026-10-20 06:58:54.096191794 +0000
++++ b/src/pulse/faqlogic.js	2026-10-20 06:59:17.760216268 +0000
+@@ -1,4 +1,5 @@
+ import { tokenize, retrieve } from './knowledge.js';
++import { BENIGN } from './analyze.js'; // fix-5
+ 
+ // The thinking behind FAQs Intelligence and the "verify before it goes out" checks.
+ // Everything here is plain functions with no database and no AI, so it can be tested
+@@ -17,18 +18,33 @@
+ // Words that mean something actually went wrong, as opposed to someone asking how a thing works.
+ const ERR_RE = /error|fail|bug|broken|stuck|not working|doesn'?t work|can't|cannot|unable|revert|crash|timeout|exploit|lost|missing|never (received|got)/i;
+ 
++// fix-5: harmless phrases must not look like a failure, chatter is not an FAQ, and nobody should be
++// told to hand over a seed phrase, so those messages never feed an FAQ or a report that gets posted.
++const scrub = (t) => String(t || '').replace(BENIGN, ' ');
++const SHARE_SECRET = /\b(send|share|give|dm|enter|paste|type|submit)\b.{0,40}\b(seed( phrase)?|private key|recovery phrase|secret phrase|mnemonic)\b|\b(seed( phrase)?|private key|recovery phrase|secret phrase|mnemonic)\b.{0,40}\b(send|share|give|dm|to (fix|verify|validate|sync))\b/i;
++const NOT_FAQ = /\b(wen|when) (moon|lambo|pump|100x|1000x)\b|\bprice (prediction|target)\b|\b(to the moon|lambo|financial advice)\b/i;
++const NOT_AN_ANSWER = /^(thanks?( you)?|thx|ok(ay)?|noted|done|lol|haha|yes|no|sure|welcome|gm|checking|looking into it|dm( me)?|check (your )?dms?)\b[\s.!,]*$/i;
++const ASKS_DM = /\b(dm|pm|message) (me|us)\b|\bcheck (your )?(dms?|inbox)\b|\bsend (me|us) (a )?(dm|message)\b/i;
++
++/** A moderator reply that can stand as an FAQ answer: a real sentence, not "thanks", not "DM me". */
++export function usableAnswer(t) {
++  const s = String(t || '').trim();
++  return s.length >= 15 && s.split(/\s+/).length >= 4 && !NOT_AN_ANSWER.test(s) && !ASKS_DM.test(s) && !SHARE_SECRET.test(s);
++}
++
+ export const topicOf = (d) => (d.topics || []).find((t) => TOPICS.includes(t)) || (d.topics || [])[0] || 'general';
+ 
+ /** Is this message something FAQs Intelligence should look at? Ideas and praise are not. */
+ export function isCandidate(d) {
++  if (!d || SHARE_SECRET.test(String(d.text || '')) || NOT_FAQ.test(String(d.text || ''))) return false; // fix-5
+   if (d.kind === 'question' || d.kind === 'concern') return true;
+-  return d.kind === 'discussion' && ERR_RE.test(String(d.text || ''));
++  return d.kind === 'discussion' && ERR_RE.test(scrub(d.text));
+ }
+ 
+ /** question, complaint (unhappy, but nothing broke) or technical (something failed). */
+ export function categorize(d) {
+   const t = String(d.text || '');
+-  if (ERR_RE.test(t)) return 'technical';
++  if (ERR_RE.test(scrub(t))) return 'technical'; // fix-5
+   return d.kind === 'concern' ? 'complaint' : 'question';
+ }
+ const SEVERITY = { question: 0, complaint: 1, technical: 2 };
+@@ -39,13 +55,14 @@
+ 
+ // Something went wrong. A how-to question ("how do I stake?") is not an issue report, and neither is
+ // a general worry, so a message needs a failure in it AND something technical it happened to.
+-const FAILURE = /\b(fail(s|ed|ing|ure|ures)?|errors?|bugs?|bugg(y|ed)|glitch(es|ed|y)?|broken|crash(es|ed|ing)?|stuck|froze(n)?|freez(es|ing)|hang(s|ing)?|tim(e[ds]?|ing) ?outs?|revert(s|ed|ing)?|rejected|declined|not (working|loading|showing|appearing|syncing|connecting|updating|responding|displaying|going through|confirming)|(doesn'?t|does not|isn'?t|won'?t|didn'?t|did not) (work|load|show|appear|sync|connect|update|respond|go through|confirm)|can'?t|cannot|can not|unable to|never (received|arrived|showed|got)|missing|disappeared|(is|are|was|keeps?) (down|offline)|nothing happens|lost (my|our)|wrong (balance|amount))\b/i;
+-const TECH_CONTEXT = /\b(wallets?|metamask|phantom|ledger|keplr|txs?|txn|transactions?|bridg(e|es|ing)|bridged|stak(e|ed|es|ing)|unstak(e|ed|es|ing)|claim(s|ed|ing)?|withdraw(al|als|ing)?|deposit(s|ing)?|swap(s|ping)?|gas|rpc|api|app|website|site|dashboard|portal|page|login|log in|sign in|connect(ing|ion)?|sync(ing)?|node|validator|mint(ing|ed)?|airdrop|balance|transfer(s|red|ring)?|pool|liquidity|button|interface|kyc|verification|extension|mobile|ios|android|browser|network|chain|mainnet|testnet|contract|explorer|rewards?|ibc|ui)\b/i;
++const FAILURE = /\b(fail(s|ed|ing|ure|ures)?|errors?|bugs?|bugg(y|ed)|glitch(es|ed|y)?|broken|crash(es|ed|ing)?|stuck|froze(n)?|freez(es|ing)|hang(s|ing)?|tim(e[ds]?|ing) ?outs?|revert(s|ed|ing)?|rejected|declined|not (working|loading|showing|appearing|syncing|connecting|updating|responding|displaying|going through|confirming)|(doesn'?t|does not|isn'?t|won'?t|didn'?t|did not) (work|load|show|appear|sync|connect|update|respond|go through|confirm)|can'?t|cannot|can not|unable to|never (received|arrived|showed|got)|missing|disappeared|(is|are|was|keeps?) (down|offline)|nothing happens|(does|do|did) nothing|won'?t (sign|approve|launch|submit|accept)|(still )?pending (for|since)|stuck pending|(balance|amount) (is |was )?(wrong|zero)|lost (my|our)|wrong (balance|amount))\b/i;
++const TECH_CONTEXT = /\b(wallets?|metamask|phantom|ledger|keplr|kepler|cosmostation|osmosis|keplr|txs?|txn|transactions?|bridg(e|es|ing)|bridged|stak(e|ed|es|ing)|unstak(e|ed|es|ing)|claim(s|ed|ing)?|withdraw(al|als|ing)?|deposit(s|ing)?|swap(s|ping)?|gas|rpc|api|app|website|site|dashboard|portal|page|login|log in|sign in|connect(ing|ion)?|sync(ing)?|node|validator|mint(ing|ed)?|airdrop|balance|transfer(s|red|ring)?|pool|liquidity|button|interface|kyc|verification|extension|mobile|ios|android|browser|network|chain|mainnet|testnet|contract|explorer|rewards?|ibc|ui)\b/i;
+ 
+ /** True when a message reports something that broke, not a question about how a thing works. */
+ export function isTechnicalIssue(d) {
+   if (!d || d.kind === 'praise') return false;
+-  const t = String(d.text || '').replace(/can'?t wait/gi, ' ');
++  const t = scrub(d.text); // fix-5: "can't wait / can't believe / missing out" are not failures
++  if (SHARE_SECRET.test(t)) return false;
+   if (!FAILURE.test(t)) return false;
+   return TECH_CONTEXT.test(t) || (d.topics || []).some((x) => TOPICS.includes(x));
+ }
+@@ -110,6 +127,9 @@
+ /* Grouping the same question asked in different words                 */
+ /* ------------------------------------------------------------------ */
+ 
++/** How many different members are behind a set of messages (one person repeating is one member). */
++export const reportersOf = (items) => new Set((items || []).map((d) => d.userId || d.username || d.id)).size;
++
+ export function similarity(a, b) {
+   const A = new Set(tokenize(a)), B = new Set(tokenize(b));
+   if (!A.size || !B.size) return 0;
+@@ -175,7 +195,7 @@
+     for (const r of d.staffReplies || []) if (r?.text) out.push(String(r.text).trim());
+     if (d.reply?.text) out.push(String(d.reply.text).trim());
+   }
+-  return [...new Set(out.filter(Boolean))];
++  return [...new Set(out.filter(usableAnswer))]; // fix-5: "thanks", "lol" and "DM me" are not answers
+ }
+ 
+ export const PLACEHOLDER = /no moderator answer was captured/i;
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/src/pulse/intelligence.js b/src/pulse/intelligence.js
+--- a/src/pulse/intelligence.js	2026-10-20 06:58:54.096286489 +0000
++++ b/src/pulse/intelligence.js	2026-10-20 06:59:17.760216268 +0000
+@@ -11,7 +11,7 @@
+ import { retrieve, tokenize } from './knowledge.js';
+ import {
+   isCandidate, clusterQuestions, fingerprint, findSimilarDraft, coverage,
+-  answersFor, NOTES, unsupportedFigures, isTechnicalIssue, groupIssues, splitMessage
++  answersFor, NOTES, unsupportedFigures, isTechnicalIssue, groupIssues, splitMessage, reportersOf
+ } from './faqlogic.js';
+ 
+ // The part of Pulse that watches a community on its own.
+@@ -36,7 +36,8 @@
+ /* FAQs Intelligence                                                   */
+ /* ------------------------------------------------------------------ */
+ 
+-const MAX_NEW_PER_SCAN = 25;
++const MAX_NEW_PER_SCAN = 10; // fix-5: was 25
++const MAX_PENDING = 40; // fix-5: a community never has more than this many drafts waiting for review
+ 
+ // With AI on, a moderator's reply may be tidied into a clean FAQ answer. It may only reword what the
+ // moderators said: if the tidy version adds a figure, a link or anything that breaks policy, the original
+@@ -63,7 +64,7 @@
+  * complaint or error that its facts do not already cover. Safe to run as often as you like: the same
+  * question is never raised twice, and one the manager dismissed stays dismissed.
+  */
+-export async function scanFaqGaps({ key, days = 30, brief = {}, communityName = '' }) {
++export async function scanFaqGaps({ key, days = 30, brief = {}, communityName = '', auto = false }) {
+   const keys = new Set([key]);
+   const since = new Date(Date.now() - days * 86400000).toISOString();
+   const rows = listDiscussions({ communityKeys: keys, since, limit: 1500 })
+@@ -72,12 +73,19 @@
+   const known = [...listFaqDrafts(keys)];
+   const created = [];
+   let covered = 0, refreshed = 0;
++  // fix-5: with nothing in the facts every question looks like a gap, so the automatic watcher waits until
++  // the manager has added facts. A manager pressing Scan still gets a scan.
++  const pendingNow = known.filter((x) => x.communityKey === key && x.status === 'pending').length;
++  const room = Math.max(0, MAX_PENDING - pendingNow);
++  const noFacts = !knowledge.length && !(brief.facts || []).length;
++  const canCreate = !(auto && noFacts);
+ 
+   const qualifying = clusterQuestions(rows)
+     .filter((c) => tokenize(c.rep.text).length)
+     .map((c) => ({ c, answers: answersFor(c) }))
+-    // A question asked once with no answer and no sign of trouble is not worth a manager's time yet.
+-    .filter(({ c, answers }) => c.items.length >= 2 || answers.length || c.category !== 'question')
++    // fix-5: worth a manager's time only when at least two different members raised it, or a moderator
++    // already gave a real answer. One person, one message, no answer is not a frequently asked question.
++    .filter(({ c, answers }) => reportersOf(c.items) >= 2 || answers.length)
+     .sort((a, b) => b.c.items.length - a.c.items.length);
+ 
+   for (const { c, answers } of qualifying) {
+@@ -93,7 +101,7 @@
+     }
+     const cov = coverage(c.rep.text, { knowledge, brief });
+     if (cov.covered) { covered++; continue; }
+-    if (created.length >= MAX_NEW_PER_SCAN) continue;
++    if (!canCreate || created.length >= Math.min(MAX_NEW_PER_SCAN, room)) continue;
+ 
+     let answer = answers[0] || '';
+     let basis = answer ? 'moderator' : 'none';
+@@ -234,7 +242,7 @@
+     try {
+       const settings = await getSettings(platform, id);
+       if (settings.intelEnabled === false) continue; // the manager switched reading off for this community
+-      const r = await scanFaqGaps({ key, days: 30, brief: settings.brief });
++      const r = await scanFaqGaps({ key, days: 30, brief: settings.brief, auto: true });
+       out.communities++; out.drafts += r.created;
+     } catch (e) { console.error('[watch] scan failed', key, e.message); }
+   }
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/src/pulse/pools.js b/src/pulse/pools.js
+--- a/src/pulse/pools.js	2026-10-20 06:58:54.096329915 +0000
++++ b/src/pulse/pools.js	2026-10-20 06:59:17.760216268 +0000
+@@ -13,7 +13,7 @@
+ const CHAIN_ALIASES = { eth: 'ethereum', mainnet: 'ethereum', bnb: 'bsc', bnbchain: 'bsc', sol: 'solana', matic: 'polygon', arb: 'arbitrum', op: 'optimism', avax: 'avalanche', osmo: 'osmosis' };
+ const chainOf = (s) => { const k = String(s || '').toLowerCase().trim(); return CHAIN_ALIASES[k] || k; };
+ 
+-const EVM = /0x[a-fA-F0-9]{40}/;
++const EVM = /(?<![0-9a-zA-Z])0x[a-fA-F0-9]{40}(?![0-9a-zA-Z])/; // fix-5: a 64 character address is not an EVM address
+ const SOL = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+ const SLUGCHAIN = /^[a-z0-9-]{2,30}$/;
+@@ -32,7 +32,7 @@
+ async function fetchPoolText(url, fetcher = fetchText) {
+   let last;
+   for (let attempt = 0; attempt < 3; attempt++) {
+-    try { return await fetcher(url); } catch (e) {
++    try { return await fetcher(url, { timeoutMs: 8000 }); } catch (e) { // fix-5: was 12 seconds a try
+       last = e;
+       const transient = e.status === 429 || e.status >= 500 || isNetwork(e) || e.name === 'AbortError' || e.name === 'TimeoutError';
+       if (!transient || attempt === 2) break;
+@@ -86,6 +86,15 @@
+       const id = seg.find((s) => UUID.test(s));
+       return id ? { ok: true, kind: 'llama-pool', chain: 'defillama', address: id.toLowerCase() } : { ok: false, error: 'I need a DefiLlama pool page (defillama.com/yields/pool/…).' };
+     }
++    // fix-5: any tracker or explorer link that names Osmosis and a pool number.
++    if (seg.some((s) => chainOf(s) === 'osmosis') || host.includes('osmosis')) {
++      const pi = seg.findIndex((s) => /^pools?$/i.test(s));
++      const pid = pi >= 0 ? seg[pi + 1] : '';
++      if (/^\d+$/.test(pid || '')) return finish('pool', 'osmosis', pid);
++    }
++    // fix-5: Sui, Aptos and similar 64 character addresses need the chain picked, and are no longer cut down to an EVM address.
++    const long = raw.match(/(?<![0-9a-zA-Z])0x[a-fA-F0-9]{64}(?![0-9a-zA-Z])/);
++    if (long && pickChain) return finish('pool', pickChain, long[0]);
+     const evm = raw.match(EVM);
+     if (evm) {
+       let c = pickChain || chainOf(u.searchParams.get('chain') || '');
+@@ -107,7 +116,12 @@
+ function finish(mode, chain, address) {
+   if (!SLUGCHAIN.test(chain)) return { ok: false, error: NOT_SURE };
+   const a = String(address);
+-  const valid = EVM.test(a) && a.length === 42 ? a.toLowerCase() : SOL.test(a) ? a : (/^\d{1,9}$/.test(a) && chain === 'osmosis' ? a : '');
++  // fix-5: also accept the 64 character 0x addresses of Sui and Aptos, and the long base64 style addresses of TON.
++  const valid = EVM.test(a) && a.length === 42 ? a.toLowerCase()
++    : SOL.test(a) ? a
++    : (/^\d{1,9}$/.test(a) && chain === 'osmosis') ? a
++    : /^0x[a-fA-F0-9]{64}$/.test(a) ? a.toLowerCase()
++    : (/^[A-Za-z0-9_-]{40,70}$/.test(a) && chain !== 'osmosis') ? a : '';
+   if (!valid) return { ok: false, error: 'That address does not look right for that chain.' };
+   return { ok: true, kind: mode === 'token' ? 'token' : 'pair', chain: mode === 'token' ? chain : chain, address: valid };
+ }
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/src/telegram/bot.js b/src/telegram/bot.js
+--- a/src/telegram/bot.js	2026-10-20 06:58:54.096617564 +0000
++++ b/src/telegram/bot.js	2026-10-20 06:59:17.760216268 +0000
+@@ -24,13 +24,26 @@
+ const adminCache = new Map(); // chatId -> { ids: Set, at }
+ const CACHE_MS = 60 * 1000;
+ 
++// fix-5: messages that arrive together share one Telegram request, and if Telegram fails the last known
++// list is used instead of dropping the message.
++const adminInflight = new Map();
+ async function getAdminIds(chatId) {
+   const cached = adminCache.get(chatId);
+   if (cached && Date.now() - cached.at < CACHE_MS) return cached.ids;
+-  const admins = await bot.getChatAdministrators(chatId);
+-  const ids = new Set(admins.map(a => a.user.id));
+-  adminCache.set(chatId, { ids, at: Date.now() });
+-  return ids;
++  if (adminInflight.has(chatId)) return adminInflight.get(chatId);
++  const run = (async () => {
++    try {
++      const admins = await bot.getChatAdministrators(chatId);
++      const ids = new Set(admins.map(a => a.user.id));
++      adminCache.set(chatId, { ids, at: Date.now() });
++      return ids;
++    } catch (e) {
++      if (cached) return cached.ids;
++      throw e;
++    }
++  })().finally(() => adminInflight.delete(chatId));
++  adminInflight.set(chatId, run);
++  return run;
+ }
+ 
+ const isGroup = (chat) => chat && (chat.type === 'group' || chat.type === 'supergroup');
+@@ -208,20 +221,33 @@
+ 
+ // Groups this person is a real admin of (asked live, by numeric ID).
+ const adminChatCache = new Map(); // userId -> { at, chats }
++// fix-5: a rate limit or network blip is not "this person is not an admin". The last known answer is kept,
++// the lookup is retried soon, and several dashboard requests at once share one round of Telegram calls.
++const adminChatInflight = new Map();
++const TRANSIENT = (e) => { const c = e?.response?.body?.error_code; return !c || c === 429 || c >= 500; };
+ export async function telegramAdminChats(userId) {
+   if (!bot) return [];
+   const cached = adminChatCache.get(userId);
+   if (cached && Date.now() - cached.at < 30000) return cached.chats;
+-  const groups = await listCommunities('telegram');
+-  const checks = await Promise.all(groups.map(async g => {
+-    try {
+-      const m = await bot.getChatMember(g.id, userId);
+-      return (m.status === 'creator' || m.status === 'administrator') ? { id: g.id, name: g.name } : null;
+-    } catch { return null; }
+-  }));
+-  const chats = checks.filter(Boolean);
+-  adminChatCache.set(userId, { at: Date.now(), chats });
+-  return chats;
++  if (adminChatInflight.has(userId)) return adminChatInflight.get(userId);
++  const run = (async () => {
++    const groups = await listCommunities('telegram');
++    let transient = false;
++    const checks = await Promise.all(groups.map(async g => {
++      try {
++        const m = await bot.getChatMember(g.id, userId);
++        return (m.status === 'creator' || m.status === 'administrator') ? { id: g.id, name: g.name } : null;
++      } catch (e) {
++        if (TRANSIENT(e)) { transient = true; return cached?.chats.find(c => c.id === g.id) || null; }
++        return null;
++      }
++    }));
++    const chats = checks.filter(Boolean);
++    adminChatCache.set(userId, { at: transient ? Date.now() - 25000 : Date.now(), chats });
++    return chats;
++  })().finally(() => adminChatInflight.delete(userId));
++  adminChatInflight.set(userId, run);
++  return run;
+ }
+ 
+ export async function getTelegramAdmins(chatId) {
+diff -ruN '--exclude=*.bak*' '--exclude=*.patch' '--exclude=apply-*.mjs' '--exclude=*.before-*' a/test/fix5.test.js b/test/fix5.test.js
+--- a/test/fix5.test.js	1970-01-01 00:00:00.000000000 +0000
++++ b/test/fix5.test.js	2026-10-20 06:59:17.760216268 +0000
+@@ -0,0 +1,57 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { analyze } from '../src/pulse/analyze.js';
++import { isCandidate, isTechnicalIssue, answersFor, usableAnswer, reportersOf } from '../src/pulse/faqlogic.js';
++import { parsePoolInput } from '../src/pulse/pools.js';
++
++// fix-5 tests. No database and no network needed.
++const asRow = (text) => { const a = analyze(text); return a ? { text, ...a } : null; };
++
++test("harmless can't phrases are not problems", () => {
++  for (const t of ["I can't wait for mainnet to launch!!", "gm fam can't believe how fast the chain is growing", "I'm missing out on the rewards because I was away"]) {
++    const r = asRow(t);
++    assert.ok(!r || r.kind !== 'concern', t);
++    assert.ok(!r || !isTechnicalIssue(r), t);
++  }
++});
++
++test('price chatter and secret-phrase requests never become FAQ candidates', () => {
++  assert.equal(isCandidate({ kind: 'question', text: 'wen moon bro price is so low' }), false);
++  assert.equal(isCandidate({ kind: 'concern', text: 'support said send your seed phrase to fix the wallet error' }), false);
++  assert.equal(isTechnicalIssue({ kind: 'concern', text: 'support said send your seed phrase to fix the wallet error', topics: ['wallet'] }), false);
++  assert.equal(isCandidate({ kind: 'question', text: 'How long does unstaking take?' }), true);
++});
++
++test('Keplr and Kepler wallet problems are kept and reported as technical issues', () => {
++  for (const t of ["my keplr won't sign the transaction", 'Kepler wallet shows wrong balance after unstake', 'claim button does nothing, tx pending for 3 hours', 'Keplr is not connecting to the dapp']) {
++    const r = asRow(t);
++    assert.equal(r?.kind, 'concern', t);
++    assert.ok(isTechnicalIssue(r), t);
++    if (/keplr|kepler/i.test(t)) assert.ok((r.topics || []).includes('wallet'), t);
++  }
++});
++
++test('thanks, lol and DM me are not moderator answers', () => {
++  assert.equal(usableAnswer('lol'), false);
++  assert.equal(usableAnswer('Thanks!'), false);
++  assert.equal(usableAnswer('dm me and I will help you out'), false);
++  assert.equal(usableAnswer('Unstaking takes about 21 days.'), true);
++  const row = { text: 'How long does unstaking take?', staffReplies: [{ text: 'lol' }, { text: 'check your dms' }, { text: 'Unstaking takes about 21 days.' }] };
++  assert.deepEqual(answersFor({ rep: row, items: [row] }), ['Unstaking takes about 21 days.']);
++});
++
++test('one member asking twice is one member', () => {
++  assert.equal(reportersOf([{ userId: 'a' }, { userId: 'a' }]), 1);
++  assert.equal(reportersOf([{ userId: 'a' }, { userId: 'b' }]), 2);
++});
++
++test('pool links: Osmosis works, a 64 character address is never cut into an EVM one', () => {
++  const P = (input, extra = {}) => parsePoolInput({ mode: 'pool', input, ...extra });
++  assert.deepEqual(P('https://app.osmosis.zone/pool/3505'), { ok: true, kind: 'pair', chain: 'osmosis', address: '3505' });
++  assert.deepEqual(P('https://www.mintscan.io/osmosis/pool/3505'), { ok: true, kind: 'pair', chain: 'osmosis', address: '3505' });
++  const sui = '0x' + 'a'.repeat(64);
++  assert.equal(P('https://suiscan.xyz/mainnet/object/' + sui).ok, false, 'without the chain it asks instead of guessing');
++  assert.deepEqual(P('https://suiscan.xyz/mainnet/object/' + sui, { chain: 'sui' }), { ok: true, kind: 'pair', chain: 'sui', address: sui });
++  assert.deepEqual(P(sui, { chain: 'sui' }), { ok: true, kind: 'pair', chain: 'sui', address: sui });
++  assert.match(P('0x123', { chain: 'bsc' }).error, /does not look right/);
++});

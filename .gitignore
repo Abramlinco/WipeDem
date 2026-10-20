@@ -10,3 +10,9 @@ sentinel-reply-patch/
 sentinel-surgical-patch.js
 *patch*.zip
 *patch*.js
+
+
+.bak-* 
+.before-reply-patch
+.patch files
+apply-*.mjs
