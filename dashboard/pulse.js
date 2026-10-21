@@ -244,7 +244,7 @@ async function pulsePools(community) {
       ${p.error && html`<div class="txt" style="color:var(--danger);white-space:normal">${p.error}</div>`}
       <div class="pmeta">${p.communityName}${sn ? ` · updated ${ago(sn.at)}` : ' · not read yet'}${p.url && html` · <a href="${safeUrl(p.url)}" target="_blank" rel="noopener noreferrer">Open source page ↗</a>`}</div>
     </div>
-    <div class="actions"><button class="btn" data-pulse="pool-refresh" ${where}>Check now</button><button class="btn ban" data-pulse="pool-del" ${where} data-title="${p.label}">Remove</button></div></div>`;
+    <div class="actions"><button class="btn" data-pulse="pool-refresh" ${where}>Check now</button>${sn && html`<button class="btn primary" data-pulse="pool-post" data-id="${p.id}">Post update</button>`}<button class="btn ban" data-pulse="pool-del" ${where} data-title="${p.label}">Remove</button></div></div>`;
   };
   return html`
     <div class="panel"><h2>Updates <span>what changed in the pools you watch</span></h2>
@@ -257,6 +257,7 @@ async function pulsePools(community) {
     <div class="panel"><h2>Pools you watch <span>${d.items.length} ${d.items.length === 1 ? 'pool' : 'pools'}</span></h2>
       ${d.items.length ? d.items.map(row) : html`<div class="empty"><b>Nothing watched yet</b><br>Paste a link to one of your pools below, or your token's address to watch every pool it has.</div>`}
     </div>
+    ${poolFinderPanel(d)}
     <div class="panel"><h2>Watch a pool or token <span>Osmosis, Raydium, PancakeSwap, Uniswap, QuickSwap and more</span></h2><div class="pad">
       <div class="muted" style="margin-bottom:12px">Paste a link to a pool, for example app.osmosis.zone/pool/3505. Or choose "Every pool for a token", paste the token's contract address, and you will also hear when a <b>new</b> pool appears for it. That is worth knowing, because anyone can create a pool for your token. Liquidity and trading volume come from DEX Screener (free), except Osmosis pools, which come from Osmosis itself and show liquidity only. It does not provide APY. APY only appears for a DefiLlama pool link, and only if DefiLlama allows it.</div>
       ${comms.some((c) => c.key === state.scope)
@@ -274,7 +275,7 @@ async function pulsePools(community) {
 /* ---------------------------------------------------------------- */
 let postCtx = null; // { sources, channels, x }
 
-async function openPost(text, sources = []) {
+async function openPostCore(text, sources = []) { // pool-post: wrapped below
   const comms = state.me.communities;
   $('#drawer-root').innerHTML = modalShell('Post…', html`<p class="muted">Loading your communities…</p>`).s;
   const [chan, xs] = await Promise.all([
@@ -303,7 +304,7 @@ function postPanel(text) {
     ${dest}
     <label class="fld" style="margin-top:14px"><span>On X</span><select id="post-x"><option value="none">Do not post to X</option><option value="intent">Open in X (free, you press Post on X)</option>${xOpts}</select></label>
     <div class="muted">"Open in X" needs no keys and costs nothing: X opens with your text ready and you press Post there. Posting from Sentinel needs an X account connected under Setup, then X.</div>
-    <div class="pbtns"><button class="btn primary" data-pulse="post-go">Post</button><button class="btn" data-pulse="post-copy">Copy</button></div>`);
+    <div class="pbtns"><button class="btn primary" data-pulse="post-go">Post</button><button class="btn" data-pulse="post-copy">Copy</button>${postRegen ? html`<button class="btn" data-pulse="post-regen">↻ Another version (${postRegen.n + 1} of ${postRegen.total})</button>` : ''}</div>`);
 }
 
 function updatePostCount() {
@@ -834,12 +835,12 @@ function cpIdeaCard(m, i, n) {
   const basis = i.source && i.source.url ? html`Observed: <a href="${i.source.url}" target="_blank" rel="noopener noreferrer">${i.source.title}</a>` : html`AI suggestion`;
   return html`<div style="margin-top:10px;padding:12px;border:1px solid var(--line,#d5dadd);border-radius:12px"><div class="who"><b>${n + 1}. ${i.title}</b> <span class="tag ${cls}">${label}</span></div><div>${i.pitch}</div><div class="muted">Why: ${i.why || '—'}</div><div class="muted">${i.channel ? `${i.channel} · ` : ''}${basis}</div><div class="tools" style="margin-top:8px"><button class="btn primary" data-cp-develop="${m.id}" data-idx="${n}">${i.verdict === 'no' ? 'Develop anyway' : 'Develop this'}</button></div></div>`;
 }
-function cpMessage(m) {
+function cpMessageOld(m) { // campaign-ux: replaced below
   if (m.role === 'user') return html`<div class="cp-message user"><div class="cp-role">You</div><div class="cp-text">${m.text}</div></div>`;
   if (m.kind === 'ideas' && Array.isArray(m.ideas)) return html`<div class="cp-message assistant"><div class="cp-role">Campaign Coordinator</div><div class="cp-text">${m.intro || 'Here are three ideas to choose from.'}</div>${m.ideas.map((i, n) => cpIdeaCard(m, i, n))}${cpMeta(m.meta)}</div>`;
   return html`<div class="cp-message assistant"><div class="cp-role">Campaign Coordinator</div><div class="cp-text">${m.text}</div>${cpMeta(m.meta)}<div class="tools"><button class="btn" data-cp-copy="${m.id}">Copy</button><button class="btn" data-cp-save="${m.id}">Save as campaign</button></div></div>`;
 }
-function cpSavedRow(c) {
+function cpSavedRowOld(c) {
   const origin = c.origin === 'ai' ? 'AI-generated' : c.origin === 'built-in' ? 'Starter template' : 'Manual';
   const src = c.sources && c.sources.length ? ` · ${c.sources.length} source link(s)` : '';
   return html`<div class="row static"><div class="rowmain"><div class="who">${c.title}</div><div class="txt">${c.type} · ${c.goal || 'No goal set'} · ${origin}${src}</div><div class="tools" style="margin-top:8px"><button class="btn" data-cp-open="${c.id}">Open in chat</button><button class="btn" data-cp-edit="${c.id}">Edit</button><button class="btn" data-cp-delete="${c.id}">Delete</button></div></div><select data-campaign-status="${c.id}">${Object.entries(CP_STATUS).map(([k, v]) => html`<option value="${k}" ${k === c.status ? 'selected' : ''}>${v}</option>`)}</select></div>`;
@@ -850,7 +851,7 @@ function cpDraft() {
   return { x: `Show me the latest ${t} campaigns active in Web3 right now, and tell me which would fit my community and which would not.`, web3: 'What are the latest things helping Web3 communities grow faster? Which of them would fit my community?', ai: `I need a ${t} campaign for my community.` }[campaignPlannerState.source];
 }
 
-async function cpAsk({ message = '', example = '', idea = null } = {}) {
+async function cpAskOld({ message = '', example = '', idea = null } = {}) {
   const community = document.querySelector('#cp-community')?.value || campaignPlannerState.community;
   campaignPlannerState.community = community;
   const status = document.querySelector('#cp-status');
@@ -869,7 +870,7 @@ async function cpAsk({ message = '', example = '', idea = null } = {}) {
   const box = document.querySelector('#cp-messages'); if (box) box.scrollTop = box.scrollHeight;
 }
 
-async function loadCampaignPlanner() {
+async function loadCampaignPlannerCore() {
   const communities = state.me.communities || [];
   if (!communities.length) return setPage(html`<div class="topbar"><h1>Campaign Planner</h1></div>${onboarding(null)}`);
   if (!campaignPlannerState.community || !communities.some(c => c.key === campaignPlannerState.community)) campaignPlannerState.community = state.scope && state.scope !== 'all' ? state.scope : communities[0].key;
@@ -932,7 +933,7 @@ document.addEventListener('click', async e => {
     if (!fields?.title) return;
     try {
       const origin = m.meta?.mode === 'ai' ? 'ai' : m.meta?.mode === 'built-in' ? 'built-in' : 'manual';
-      await api('/pulse/campaigns', { method: 'POST', body: { community: campaignPlannerState.community, title: fields.title, type: campaignPlannerState.type, goal: fields.goal, audience: fields.audience, platform: fields.platform, reward: fields.reward, draft: m.text, steps: x.steps, sources: m.meta?.evidence || [], origin } });
+      await api('/pulse/campaigns', { method: 'POST', body: { community: campaignPlannerState.community, title: fields.title, type: campaignPlannerState.type, goal: fields.goal, audience: fields.audience, platform: fields.platform, reward: fields.reward, draft: m.text, steps: x.steps, sources: m.meta?.evidence || [], origin, via: m.meta?.source || '' });
       toast('Saved as a draft. Nothing has been published.'); await loadCampaignPlanner();
     } catch (err) { fail(err); }
     return;
@@ -976,3 +977,288 @@ try {
     reloadPulse();
   };
 } catch { /* very old browser: the Setup page shows the account after a reload */ }
+
+/* pool-finder: Suggested pools panel, with a liquidity filter the manager can change. */
+const POOL_MINS = [[1000, 'Over $1K (recommended)'], [0, 'Show all, including tiny pools'], [100, 'Over $100'], [10000, 'Over $10K'], [100000, 'Over $100K']];
+const suggState = { key: '', data: null, min: 1000, error: '' };
+try {
+  const saved = localStorage.getItem('pulse.poolMin');
+  if (saved !== null && POOL_MINS.some(([v]) => v === Number(saved))) suggState.min = Number(saved);
+} catch { /* browser storage may be unavailable; the default is used */ }
+
+function poolFinderPanel(d) {
+  const comms = state.me.communities;
+  const scoped = comms.find((c) => c.key === state.scope);
+  const pick = scoped ? scoped.key : suggState.key;
+  const chainName = (c) => d.chains[c] || c;
+  const have = suggState.data && suggState.key === pick ? suggState.data : null;
+  const watched = new Set(d.items.filter((p) => p.communityKey === pick).map((p) => `${p.chain}:${String(p.address).toLowerCase()}`));
+  const all = have ? have.suggestions.filter((s) => !watched.has(`${s.chain}:${String(s.address).toLowerCase()}`)) : [];
+  const shown = all.filter((s) => (s.tvlUsd == null ? suggState.min === 0 : s.tvlUsd >= suggState.min));
+  const hidden = all.length - shown.length;
+  const [plat, ...rest] = String(pick).split(':');
+  const row = (s) => html`<div class="row static"><div class="rowmain">
+      <div class="who">${s.label} ${String(s.dex).toLowerCase() !== String(chainName(s.chain)).toLowerCase() && html`<span class="tag">${s.dex}</span> `}<span class="tag">${chainName(s.chain)}</span></div>
+      <div class="poolstats"><div><span>Liquidity</span><b>${usd(s.tvlUsd)}</b></div></div>
+      <div class="pmeta">Holds ${s.tokens.join(', ')} · <a href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">Open source page ↗</a></div></div>
+    <div class="actions"><button class="btn primary" data-pulse="sugg-add" data-platform="${plat}" data-community="${rest.join(':')}" data-input="${s.addInput}">Add</button></div></div>`;
+  return html`<div class="panel"><h2>Suggested pools <span>found from your project details</span></h2><div class="pad">
+    <div class="muted" style="margin-bottom:12px">Pulse reads your project brief (name and ticker) and any token addresses in it or in your uploaded documents, then lists pools that hold your tokens. Nothing is added until you click Add. Check each pool is really yours, because anyone can create a pool with a similar name.</div>
+    ${scoped
+      ? html`<input type="hidden" id="sugg-community" value="${scoped.key}">`
+      : html`<label class="fld"><span>Community</span><select id="sugg-community"><option value="">Choose a community…</option>${comms.map((c) => html`<option value="${c.key}" ${c.key === suggState.key ? 'selected' : ''}>${CODE[c.platform]} · ${c.name}</option>`)}</select></label>`}
+    <label class="fld"><span>Show pools with</span><select data-sugg-min>${POOL_MINS.map(([v, l]) => html`<option value="${v}" ${v === suggState.min ? 'selected' : ''}>${l}</option>`)}</select></label>
+    <button class="btn primary" data-pulse="sugg-find">Find pools</button>
+    ${suggState.error && html`<div class="txt" style="color:var(--danger);white-space:normal;margin-top:10px">${suggState.error}</div>`}
+    ${have && html`<div style="margin-top:12px">
+      ${have.matched.length > 0 && html`<div class="txt" style="white-space:normal;margin-bottom:8px">Tokens matched on Osmosis: ${have.matched.map((t) => t.symbol).join(', ')}. Check these are yours.</div>`}
+      ${have.notes.map((n) => html`<div class="txt" style="white-space:normal;margin-bottom:8px">${n}</div>`)}
+      ${shown.length ? shown.map(row) : (all.length ? html`<div class="empty"><b>No pools above this liquidity</b><br>Change "Show pools with" to see the smaller ones.</div>` : have.suggestions.length ? html`<div class="empty"><b>Everything found is already being watched</b></div>` : false)}
+      ${hidden > 0 && shown.length > 0 && html`<div class="muted" style="margin-top:8px">${hidden} smaller ${hidden === 1 ? 'pool is' : 'pools are'} hidden. Change "Show pools with" to see ${hidden === 1 ? 'it' : 'them'}.</div>`}</div>`}
+  </div></div>`;
+}
+
+Object.assign(PULSE_ACTS, {
+  'sugg-find': async (el) => {
+    const key = $('#sugg-community')?.value;
+    if (!key || !state.me.communities.some((c) => c.key === key)) return toast('Choose a community first', true);
+    const [platform, ...rest] = key.split(':');
+    el.disabled = true; el.textContent = 'Looking…';
+    suggState.key = key; suggState.error = ''; suggState.data = null;
+    try {
+      const r = await api(`/pulse/pools/suggest/${platform}/${enc(rest.join(':'))}`);
+      if (r.ok === false) suggState.error = r.error; else suggState.data = r;
+    } catch (e) { suggState.error = e.message || 'Could not look for pools. Try again.'; }
+    finally { await reloadPulse(); }
+  },
+  'sugg-add': async (el) => {
+    el.disabled = true; el.textContent = 'Adding…';
+    try {
+      const r = await api(`/pulse/pools/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'POST', body: { mode: 'pool', input: el.dataset.input, chain: '' } });
+      if (r.result.ok) toast('Added. Pulse will tell you when it changes.');
+      else toast(`Added, but it could not be read yet: ${r.result.error}`, true);
+    } finally { await reloadPulse(); }
+  }
+});
+
+document.addEventListener('change', (e) => {
+  const el = e.target.closest ? e.target.closest('[data-sugg-min]') : null;
+  if (!el) return;
+  suggState.min = Number(el.value);
+  try { localStorage.setItem('pulse.poolMin', String(suggState.min)); } catch { /* optional */ }
+  reloadPulse();
+});
+
+/* campaign-ux: who brainstormed, fold and unfold, jump to the new idea, start over, and what each source has stored. */
+const CP_SRC = {
+  x: { name: 'X Campaigns', short: 'X', glyph: '𝕏', ask: 'Ask X' },
+  web3: { name: 'Web3 Sources', short: 'Web', glyph: '◎', ask: 'Ask Web Sources' },
+  ai: { name: 'Ask AI', short: 'AI', glyph: '✧', ask: 'Ask AI' }
+};
+Object.assign(campaignPlannerState, { open: new Set(), seen: new Set(), openFor: '', focusId: '' });
+
+const cpBadge = (src, prefix = '') => (CP_SRC[src] ? html`<span class="cp-badge cp-src-${src}">${CP_SRC[src].glyph} ${prefix}${CP_SRC[src].name}</span>` : '');
+
+function cpSummary(m) {
+  const cut = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+  if (m.kind === 'ideas' && Array.isArray(m.ideas)) return `${m.ideas.length} ideas: ${cut(m.ideas.map((i) => i.title).join(' · '), 130)}`;
+  if (m.kind === 'plan') return `Plan: ${cut(cpExtract(m.text).title || m.text, 110)}`;
+  return `${m.kind === 'chat' ? 'Reply' : 'Note'}: ${cut(m.text, 120)}`;
+}
+
+// New answers open by themselves. The first time a community is shown, only the newest answer is open.
+function cpSyncOpen(list) {
+  const st = campaignPlannerState;
+  if (st.openFor !== st.community) {
+    st.openFor = st.community; st.seen = new Set(list.map((m) => m.id));
+    const last = [...list].reverse().find((m) => m.role === 'assistant');
+    st.open = new Set(last ? [last.id] : []);
+    return;
+  }
+  for (const m of list) if (!st.seen.has(m.id)) { st.seen.add(m.id); if (m.role === 'assistant') st.open.add(m.id); }
+}
+
+function cpMessage(m, i) {
+  if (i === 0) cpSyncOpen(campaignPlannerState.messages);
+  if (m.role === 'user') return html`<div class="cp-message user" data-cp-msg="${m.id}"><div class="cp-role">You ${m.via ? cpBadge(m.via, 'asked ') : ''}</div><div class="cp-text">${m.text}</div></div>`;
+  const src = CP_SRC[m.meta?.source] ? m.meta.source : 'none';
+  const open = campaignPlannerState.open.has(m.id);
+  const stored = m.meta?.context?.evidence || 0;
+  const warn = m.meta?.mode === 'ai' && (src === 'x' || src === 'web3') && !stored && m.kind !== 'chat'
+    ? html`<div class="cp-warn">No stored ${src === 'x' ? 'X posts' : 'feed stories'} were available, so this came from the AI, not from ${src === 'x' ? 'X' : 'the web'}.</div>` : '';
+  const fresh = m.meta?.refreshed ? html`<div class="muted" style="font-size:.8rem;margin-top:6px">Your feeds were re-read just before this answer.</div>` : '';
+  const body = m.kind === 'ideas' && Array.isArray(m.ideas)
+    ? html`<div class="cp-text">${m.intro || 'Here are three ideas to choose from.'}</div>${m.ideas.map((x, n) => cpIdeaCard(m, x, n))}${warn}${cpMeta(m.meta)}${fresh}`
+    : html`<div class="cp-text">${m.text}</div>${warn}${cpMeta(m.meta)}${fresh}<div class="tools"><button class="btn" data-cp-copy="${m.id}">Copy</button><button class="btn" data-cp-save="${m.id}">Save as campaign</button></div>`;
+  const badge = cpBadge(m.meta?.source) || html`<span class="cp-badge">${m.meta?.mode === 'saved' ? 'Saved draft' : 'Coordinator'}</span>`;
+  return html`<div class="cp-message assistant cp-src-${src} ${open ? '' : 'folded'}" data-cp-msg="${m.id}"><button type="button" class="cp-fold" data-cp-fold="${m.id}" aria-expanded="${open ? 'true' : 'false'}">${badge}<span class="cp-sum">${cpSummary(m)}</span><span class="cp-when">${m.at ? ago(m.at) : ''}</span><span class="cp-chev">${open ? 'Close' : 'Open'}</span></button><div class="cp-body">${body}</div></div>`;
+}
+
+function cpSavedRow(c) {
+  const origin = c.origin === 'ai' ? 'AI-generated' : c.origin === 'built-in' ? 'Starter template' : 'Manual';
+  const src = c.sources && c.sources.length ? ` · ${c.sources.length} source link(s)` : '';
+  return html`<div class="row static"><div class="rowmain"><div class="who">${c.title} ${cpBadge(c.via)}</div><div class="txt">${c.type} · ${c.goal || 'No goal set'} · ${origin}${src}</div><div class="tools" style="margin-top:8px"><button class="btn" data-cp-open="${c.id}">Open in chat</button><button class="btn" data-cp-edit="${c.id}">Edit</button><button class="btn" data-cp-delete="${c.id}">Delete</button></div></div><select data-campaign-status="${c.id}">${Object.entries(CP_STATUS).map(([k, v]) => html`<option value="${k}" ${k === c.status ? 'selected' : ''}>${v}</option>`)}</select></div>`;
+}
+
+// Once a plan exists: refine it, or start over. Changing source or type means the manager wants a fresh brainstorm.
+function cpIntentDefault(messages, source, type) {
+  if (!messages.some((m) => m.role === 'assistant' && (m.kind === 'plan' || m.kind === 'chat'))) return null;
+  const last = [...messages].reverse().find((m) => m.role === 'assistant' && m.meta && m.meta.mode !== 'saved');
+  const changed = last && ((last.meta.source && last.meta.source !== source) || (last.meta.type && last.meta.type !== type));
+  return changed ? 'ideas' : 'chat';
+}
+
+function cpStatText(src, s) {
+  if (!s) return '';
+  if (src === 'ai') return `${s.discussions} recent discussions read${s.briefFilled ? ' plus your project brief.' : '. Your project brief is empty, so ideas will be generic.'}`;
+  if (!s.count) return src === 'x' ? 'No X posts stored for this community yet. Ideas would be AI-suggested, not taken from X.' : 'No feed stories stored yet. Asking reads your feeds first.';
+  return `${s.count} stored ${src === 'x' ? 'X post' : 'feed stor'}${src === 'x' ? (s.count === 1 ? '' : 's') : (s.count === 1 ? 'y' : 'ies')}, newest ${s.newest ? ago(s.newest) : 'time unknown'}.${src === 'web3' ? ' Feeds are re-read before an ask when older than 3 hours.' : ' This is not a live X search.'}`;
+}
+
+function cpMountIntent() {
+  const st = campaignPlannerState;
+  const form = document.querySelector('#cp-form');
+  if (!form || form.querySelector('#cp-intent')) return;
+  const def = cpIntentDefault(st.messages, st.source, st.type);
+  if (!def) return;
+  const wrap = document.createElement('label');
+  wrap.className = 'fld';
+  wrap.innerHTML = `<span>What should this ask do?</span><select id="cp-intent"><option value="chat">Refine the plan above</option><option value="ideas">Start over: 3 new ideas from ${CP_SRC[st.source].name} (${st.type})</option></select>`;
+  wrap.querySelector('select').value = def;
+  form.insertBefore(wrap, form.querySelector('.tools'));
+}
+
+// After an ask, take the manager to the start of the new answer.
+function cpFocusNew() {
+  const st = campaignPlannerState;
+  const id = st.focusId; st.focusId = '';
+  if (!id) return;
+  const el = document.querySelector(`[data-cp-msg="${window.CSS && CSS.escape ? CSS.escape(id) : id}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.classList.add('cp-flash');
+  setTimeout(() => el.classList.remove('cp-flash'), 2600);
+}
+
+async function cpFillSourceStatus() {
+  const st = campaignPlannerState;
+  const community = st.community;
+  let s;
+  try { s = await api(`/pulse/campaign-sources${qs({ community })}`); } catch { return; }
+  if (community !== st.community) return;
+  for (const src of Object.keys(CP_SRC)) {
+    const card = document.querySelector(`[data-cp-source="${src}"]`);
+    if (!card) continue;
+    let line = card.querySelector('.cp-srcstat');
+    if (!line) { line = document.createElement('span'); line.className = 'cp-srcstat'; card.insertBefore(line, card.querySelector('.campaign-link')); }
+    line.textContent = cpStatText(src, s[src]);
+  }
+  const status = document.querySelector('#cp-status');
+  if (status && s[st.source] && !document.querySelector('#cp-form button:disabled')) status.textContent = `${CP_SRC[st.source].name}: ${cpStatText(st.source, s[st.source])}`;
+}
+
+async function loadCampaignPlanner(keepText = true) {
+  const st = campaignPlannerState;
+  const keep = keepText ? { m: document.querySelector('#cp-message')?.value || '', e: document.querySelector('#cp-example')?.value || '' } : { m: '', e: '' };
+  await loadCampaignPlannerCore();
+  const m = document.querySelector('#cp-message'), ex = document.querySelector('#cp-example');
+  if (m && keep.m) m.value = keep.m; // switching source or type used to wipe what was typed
+  if (ex && keep.e) ex.value = keep.e;
+  const ask = document.querySelector('#cp-form button[type="submit"]');
+  if (ask && CP_SRC[st.source]) ask.textContent = CP_SRC[st.source].ask;
+  cpMountIntent();
+  cpFocusNew();
+  cpFillSourceStatus(); // not waited for: the page is usable straight away
+}
+
+async function cpAsk({ message = '', example = '', idea = null } = {}) {
+  const st = campaignPlannerState;
+  const community = document.querySelector('#cp-community')?.value || st.community;
+  st.community = community;
+  // A developed plan keeps the brainstormer its idea came from, even if the source was switched since.
+  const from = idea ? st.messages.find((x) => Array.isArray(x.ideas) && x.ideas.includes(idea)) : null;
+  const source = CP_SRC[from?.meta?.source] ? from.meta.source : st.source;
+  const type = idea && CP_TYPES_UI.includes(from?.meta?.type) ? from.meta.type : st.type;
+  const intent = idea ? '' : (document.querySelector('#cp-intent')?.value || '');
+  const status = document.querySelector('#cp-status');
+  const locked = [...document.querySelectorAll('#cp-form button, [data-cp-develop]')];
+  if (status) status.textContent = idea ? `Developing your ${CP_SRC[source].short} idea…` : `Asking ${CP_SRC[source].name}…${source === 'web3' ? ' (reading your feeds first if they are stale)' : ''}`;
+  locked.forEach((b) => { b.disabled = true; });
+  let r;
+  try {
+    r = await api('/pulse/campaign-coordinator', { method: 'POST', body: { community, source, type, message, example, idea, intent } });
+  } catch (err) {
+    toast(err.message || 'The coordinator could not respond. Please try again.', true);
+    if (status) status.textContent = 'That request failed. Your text is still in the box, so you can try again.';
+    locked.forEach((b) => { b.disabled = false; });
+    return;
+  }
+  const newest = (r.messages || []).filter((x) => x.role === 'assistant').pop();
+  st.focusId = newest ? newest.id : '';
+  await loadCampaignPlanner(false);
+}
+
+document.addEventListener('click', (e) => {
+  const fold = e.target.closest('[data-cp-fold]');
+  if (fold) {
+    const st = campaignPlannerState, id = fold.dataset.cpFold;
+    const open = !st.open.has(id);
+    if (open) st.open.add(id); else st.open.delete(id);
+    const wrap = fold.closest('.cp-message');
+    if (wrap) wrap.classList.toggle('folded', !open);
+    fold.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const chev = fold.querySelector('.cp-chev');
+    if (chev) chev.textContent = open ? 'Close' : 'Open';
+    return;
+  }
+  // The "Draft instruction" text asks for a fresh brainstorm, so the ask should start over too.
+  if (e.target.closest('[data-cp-explore]')) { const sel = document.querySelector('#cp-intent'); if (sel) sel.value = 'ideas'; }
+});
+
+/* pool-post: announce a watched pool in the Post window, with built-in versions that can be regenerated. */
+let postRegen = null; // { id, n, total, community } while the Post window holds a pool update
+
+async function openPost(text, sources = [], regen = null) {
+  postRegen = regen;
+  await openPostCore(text, sources);
+  if (!regen) return;
+  // The pool's own community is ticked, and the channel last used for a pool update is chosen again.
+  const box = document.querySelector(`[data-post-target="${regen.community}"]`);
+  if (box && !box.disabled) box.checked = true;
+  for (const sel of document.querySelectorAll('[data-post-channel]')) {
+    try {
+      const saved = localStorage.getItem(`pulse.poolChannel.${sel.dataset.postChannel}`);
+      if (saved && [...sel.options].some((o) => o.value === saved)) sel.value = saved;
+    } catch { /* browser storage may be unavailable */ }
+  }
+}
+
+Object.assign(PULSE_ACTS, {
+  'pool-post': async (el) => {
+    el.disabled = true;
+    try {
+      const d = await api(`/pulse/pool-post/${enc(el.dataset.id)}?n=0`);
+      await openPost(d.text, d.sources, { id: el.dataset.id, n: d.n, total: d.total, community: d.communityKey });
+    } catch (e) { fail(e); } finally { el.disabled = false; }
+  },
+  'post-regen': async (el) => {
+    if (!postRegen) return;
+    el.disabled = true;
+    try {
+      const d = await api(`/pulse/pool-post/${enc(postRegen.id)}?n=${postRegen.n + 1}`);
+      postRegen.n = d.n; postRegen.total = d.total;
+      $('#post-text').value = d.text;
+      updatePostCount();
+      el.textContent = `↻ Another version (${d.n + 1} of ${d.total})`;
+      const flags = $('#post-flags'); if (flags) flags.innerHTML = '';
+    } catch (e) { fail(e); } finally { el.disabled = false; }
+  }
+});
+
+// Remember the Discord channel used for pool updates, so next time it is already chosen.
+document.addEventListener('click', (e) => {
+  if (!postRegen || !e.target.closest || !e.target.closest('[data-pulse="post-go"]')) return;
+  for (const sel of document.querySelectorAll('[data-post-channel]')) {
+    try { localStorage.setItem(`pulse.poolChannel.${sel.dataset.postChannel}`, sel.value); } catch { /* optional */ }
+  }
+});

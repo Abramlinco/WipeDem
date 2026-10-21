@@ -16,12 +16,15 @@ import { applyFocus, focusKeywords, PRESETS } from '../pulse/focus.js';
 import { aiStatus, complete } from '../pulse/ai/provider.js';
 import { retrieve, bestSentences, SLUG, defiLlamaLink, LIMITS, searchProjects } from '../pulse/knowledge.js';
 import { parsePoolInput, CHAIN_NAMES } from '../pulse/pools.js';
+import { findPools } from '../pulse/poolfinder.js'; // pool-finder
 import { COST, TWEET_LIMIT, seal, open, whoAmI, postTweet, tweetLength, postCost, xIntentUrl, refreshXOAuth2 } from '../pulse/x.js';
 import { overview, hotTopics, rankTrends, buildPlaybook } from '../pulse/strategist.js';
 import { refreshTrends, secondsUntilRefreshAllowed, allSources, refreshKnowledgeSource, refreshPoolItem, xStatus, secondsUntilXAllowed, markXManual } from '../pulse/feeder.js';
 import { assertPublicUrl, safeHttpUrl } from '../pulse/sources.js';
 import { config } from '../config.js';
 import crypto from 'node:crypto';
+import { poolPostDraft } from '../pulse/poolpost.js'; // pool-post
+import { pickMode, sourceStat } from '../pulse/campaignkit.js'; // campaign-ux
 import { saveSessionRecord } from '../db.js';
 
 // Mounted inside the main API router, so sign in, the JSON only rule and
@@ -294,7 +297,8 @@ pulseRouter.post('/campaign-coordinator', async (req, res) => {
   const idea = rawIdea ? { title: line(rawIdea.title, 90), pitch: line(rawIdea.pitch, 260), why: line(rawIdea.why, 300), channel: line(rawIdea.channel, 60), source: cleanSources([rawIdea.source])[0] || null } : null;
   if (rawIdea && !idea.title) return res.status(400).json({ error: 'Pick one of the ideas to develop.' });
   // First Ask gives three ideas. Once a plan exists, every Ask is a follow-up on that plan.
-  const mode = idea ? 'develop' : stored.some((m) => m.role === 'assistant' && (m.kind === 'plan' || m.kind === 'chat')) ? 'chat' : 'ideas';
+  const intent = b.intent === 'ideas' || b.intent === 'chat' ? b.intent : '';
+  const mode = pickMode({ idea, intent, stored }); // campaign-ux
   const pasted = block(b.example, 3000);
   let message = block(b.message, 1800);
   if (mode === 'develop') message = `Develop this idea: ${idea.title}`;
@@ -308,6 +312,14 @@ pulseRouter.post('/campaign-coordinator', async (req, res) => {
   const keySet = new Set([key]);
   const settings = await getSettings(platform, communityId);
   const discussions = listDiscussions({ communityKeys: keySet, since: sinceIso(30), limit: 80 });
+  // campaign-ux: Web Sources re-reads the free feeds first when the stored stories are over 3 hours old, so "latest" means latest.
+  let refreshedWeb = false;
+  if (source === 'web3') {
+    const read = listTrends({ communityKeys: keySet, since: sinceIso(7) }).filter((t) => !CP_X_SOURCE_ID.test(String(t.sourceId || ''))).map((t) => Date.parse(t.fetchedAt || t.publishedAt || '') || 0);
+    if (Date.now() - Math.max(0, ...read) > 3 * 3600000 && secondsUntilRefreshAllowed() === 0) {
+      try { await Promise.race([refreshTrends(), new Promise((resolve) => setTimeout(resolve, 25000))]); refreshedWeb = true; } catch { /* the stored stories are used */ }
+    }
+  }
   const trends = listTrends({ communityKeys: keySet, since: sinceIso(7) });
   const isX = (t) => CP_X_SOURCE_ID.test(String(t.sourceId || ''));
   const pool = source === 'x' ? trends.filter(isX) : source === 'web3' ? trends.filter((t) => !isX(t)) : [];
@@ -324,7 +336,7 @@ pulseRouter.post('/campaign-coordinator', async (req, res) => {
   const historyContext = stored.filter((m) => m.text).slice(-8).map((m) => `${m.role === 'user' ? 'Manager' : 'Coordinator'}: ${String(m.text).slice(0, 1500)}`).join('\n\n') || 'This is the first message.';
   const task = mode === 'ideas' ? cpIdeasTask(source, campaignType)
     : mode === 'develop' ? `The manager picked this idea. Develop it into the full campaign plan now.\nIdea: ${idea.title}\nPitch: ${idea.pitch}\nWhy it was suggested: ${idea.why}\nChannel: ${idea.channel}\n${idea.source ? `Observed source: ${idea.source.title} ${idea.source.url}` : 'Basis: AI suggestion, not an observed campaign.'}`
-      : 'Continue the conversation. Answer the latest request directly. If asked to draft, give a ready-to-use draft.';
+      : 'Continue the conversation. The manager is asking ' + CP_SOURCE_LABEL[source] + '. Answer the latest request directly.' + (source === 'ai' ? '' : ' Use <source_items> for anything about what is happening on ' + (source === 'x' ? 'X' : 'the web') + ', label what comes from them Observed with the item number, and call everything else an AI suggestion.') + ' If asked to draft, give a ready-to-use draft.';
   const user = `Community: ${communityName} (${platform})\nSelected source: ${CP_SOURCE_LABEL[source]}\nSelected campaign type: ${campaignType}\n\n<project_brief>\n${brief || 'Empty.'}\n</project_brief>\n\n<community_discussions>\n${discussionContext}\n</community_discussions>\n\n<project_knowledge>\n${knowContext}\n</project_knowledge>\n\n<source_items>\n${evidenceContext}\n</source_items>\n\n<pasted_example>\n${pasted || 'None.'}\n</pasted_example>\n\n<conversation_so_far>\n${historyContext}\n</conversation_so_far>\n\nTask:\n${task}\n\nLatest request from the manager:\n${message}`;
   const context = { briefFilled, discussions: discussions.length, knowledge: know.length, evidence: evidence.length, pasted: !!pasted };
   const outEvidence = evidence.filter((e) => e.url).map(({ title, url, source: s, at }) => ({ title, url, source: s, at }));
@@ -333,9 +345,10 @@ pulseRouter.post('/campaign-coordinator', async (req, res) => {
   try {
     if (aiStatus().mode !== 'none') {
       aiMode = 'ai';
-      const raw = await complete({ system: CP_SYSTEM, user, maxTokens: mode === 'ideas' ? 900 : 1400 });
+      let raw = await complete({ system: CP_SYSTEM, user, maxTokens: mode === 'ideas' ? 900 : 1400 });
       if (mode === 'ideas') {
-        const parsed = parseIdeas(raw, evidence);
+        let parsed = parseIdeas(raw, evidence);
+        if (!parsed) { try { raw = await complete({ system: CP_SYSTEM, user: user + '\n\nYour previous reply was not valid JSON. Reply again with ONLY the JSON object described in the task.', maxTokens: 900 }); parsed = parseIdeas(raw, evidence); } catch { /* the first reply is shown instead */ } }
         if (parsed) { kind = 'ideas'; ideas = parsed.ideas; intro = parsed.intro; } else { kind = 'note'; text = raw; }   // model ignored the format: show its text, stay in ideas mode
       } else { kind = mode === 'develop' ? 'plan' : 'chat'; text = raw; }
     } else {
@@ -358,12 +371,27 @@ pulseRouter.post('/campaign-coordinator', async (req, res) => {
 
   const at = new Date().toISOString();
   if (ideas) text = `${intro}\n${ideas.map((i, n) => `${n + 1}. ${i.title} [${CP_VERDICT_TEXT[i.verdict]}] - ${i.pitch}`).join('\n')}`;
-  const userMsg = { id: crypto.randomUUID(), role: 'user', kind: 'ask', text: pasted && mode !== 'develop' ? `${message}\n\n[Pasted example]\n${pasted}` : message, at };
-  const asstMsg = { id: crypto.randomUUID(), role: 'assistant', kind, text, intro, ideas: ideas || undefined, at, meta: { mode: aiMode, source, type: campaignType, evidence: outEvidence, context } };
+  const userMsg = { id: crypto.randomUUID(), role: 'user', kind: 'ask', via: source, text: pasted && mode !== 'develop' ? `${message}\n\n[Pasted example]\n${pasted}` : message, at };
+  const asstMsg = { id: crypto.randomUUID(), role: 'assistant', kind, text, intro, ideas: ideas || undefined, at, meta: { mode: aiMode, source, type: campaignType, evidence: outEvidence, context, refreshed: refreshedWeb } };
   await appendCampaignChat(owner, key, [userMsg, asstMsg]);
   return res.json({ mode, kind, messages: [userMsg, asstMsg] });
 });
 
+// campaign-ux: what each brainstormer has to work with right now, shown on the source cards.
+pulseRouter.get('/campaign-sources', async (req, res) => {
+  const key = String(req.query.community || '');
+  if (!req.access.keys.has(key)) return res.status(403).json({ error: 'Choose a community you manage.' });
+  const [platform, ...rest] = key.split(':');
+  const keySet = new Set([key]);
+  const trends = listTrends({ communityKeys: keySet, since: sinceIso(7) });
+  const isX = (t) => CP_X_SOURCE_ID.test(String(t.sourceId || ''));
+  const settings = await getSettings(platform, rest.join(':'));
+  res.json({
+    x: sourceStat(trends.filter(isX)),
+    web3: sourceStat(trends.filter((t) => !isX(t))),
+    ai: { discussions: listDiscussions({ communityKeys: keySet, since: sinceIso(30), limit: 80 }).length, briefFilled: !!(settings.brief && String(settings.brief.about || '').trim()) }
+  });
+});
 pulseRouter.get('/campaign-chat', (req, res) => {
   const key = String(req.query.community || '');
   if (!req.access.keys.has(key)) return res.status(403).json({ error: 'Choose a community you manage.' });
@@ -389,7 +417,7 @@ pulseRouter.post('/campaigns', async (req, res) => {
   if (!req.access.keys.has(key)) return res.status(403).json({ error: 'Choose a community you manage.' });
   const title = line(b.title, 100);
   if (!title) return res.status(400).json({ error: 'Give the campaign a name.' });
-  const rec = { id: crypto.randomUUID(), communityKey: key, title, type: line(b.type, 40) || 'Community challenge', goal: line(b.goal, 240), audience: line(b.audience, 160), platform: line(b.platform, 60), steps: lines(b.steps, 240, 8), reward: line(b.reward, 160), draft: String(b.draft || '').slice(0, 8000), sources: cleanSources(b.sources), origin: ['ai', 'built-in'].includes(b.origin) ? b.origin : 'manual', status: 'idea', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const rec = { id: crypto.randomUUID(), communityKey: key, title, type: line(b.type, 40) || 'Community challenge', goal: line(b.goal, 240), audience: line(b.audience, 160), platform: line(b.platform, 60), steps: lines(b.steps, 240, 8), reward: line(b.reward, 160), draft: String(b.draft || '').slice(0, 8000), sources: cleanSources(b.sources), origin: ['ai', 'built-in'].includes(b.origin) ? b.origin : 'manual', via: ['x', 'web3', 'ai'].includes(b.via) ? b.via : '', status: 'idea', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   await addCampaign(rec); res.status(201).json(rec);
 });
 pulseRouter.patch('/campaigns/:id', async (req, res) => {
@@ -606,6 +634,15 @@ pulseRouter.get('/pools', (req, res) => {
     events: listPoolEvents({ communityKeys: keys, since: sinceIso(days(req)), limit: 60 }).map((e) => ({ id: e.id, communityName: names.get(e.communityKey) || '', poolLabel: e.poolLabel, type: e.type, severity: e.severity, text: e.text, url: e.url, at: e.at })),
     chains: CHAIN_NAMES
   });
+});
+
+// pool-finder: suggest pools from this community's project details. The manager still has to click Add.
+pulseRouter.get('/pools/suggest/:platform/:communityId', guard, async (req, res) => {
+  const { platform, communityId } = req.params;
+  const key = communityKey(platform, communityId);
+  const settings = await getSettings(platform, communityId);
+  const texts = knowledgeChunks(key).slice(0, 400).map((c) => String(c.text || '').slice(0, 2000));
+  res.json(await findPools({ brief: settings.brief || {}, texts }));
 });
 
 pulseRouter.post('/pools/:platform/:communityId', guard, async (req, res) => {
@@ -851,6 +888,17 @@ const PLACEHOLDER = /\[[^\]\n]{1,60}\]/;
 
 // Posts one approved message to the chosen places. Every destination is checked first, with the same
 // rules as replies, so nothing is posted anywhere unless all of it is allowed.
+// pool-post: a ready-to-edit announcement for a watched pool. The manager still reviews it, picks channels and approves it in the Post window.
+pulseRouter.get('/pool-post/:id', async (req, res) => {
+  const item = listPoolItems(req.access.keys).find((p) => p.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Pool not found in your communities.' });
+  if (!item.snapshot) return res.status(400).json({ error: 'Pulse has not read this pool yet. Press Check now first.' });
+  const i = item.communityKey.indexOf(':');
+  const settings = await getSettings(item.communityKey.slice(0, i), item.communityKey.slice(i + 1));
+  const d = poolPostDraft(item, settings.brief || {}, Number(req.query.n) || 0);
+  res.json({ ...d, communityKey: item.communityKey, flags: checkPolicy(d.text, settings.brief || {}, d.sources) });
+});
+
 pulseRouter.post('/post', async (req, res) => {
   const b = req.body || {};
   const text = String(b.text ?? '').trim();

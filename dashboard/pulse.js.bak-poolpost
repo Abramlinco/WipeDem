@@ -1,0 +1,1216 @@
+'use strict';
+
+/* =====================================================================
+   Pulse: community ideas, market trends and the campaign playbook.
+   Loaded before app.js. Everything here runs only when a page asks for
+   it, and it uses the same helpers as the rest of the dashboard (html``
+   escapes anything that came from outside, so a message full of HTML
+   cannot run code).
+===================================================================== */
+const pulseState = { setup: 'brief', kind: 'all', topic: '', showDone: false, space: 'all', days: 7 };
+
+const P_KIND = { idea: 'Idea', question: 'Question', concern: 'Concern', praise: 'Praise', discussion: 'Discussion' };
+// Only things that need attention get a colour: concerns, and (below) unanswered questions.
+const P_KIND_CLS = { idea: 'info', question: '', concern: 'net', praise: '', discussion: '' };
+const P_SPACE = { web3: 'Web3', traditional: 'Traditional', social: 'Social' };
+// A confirm pop-up in the same style as the rest of the dashboard, instead of the browser's plain one.
+function askConfirm(title, body, okLabel = 'Confirm') {
+  return new Promise((resolve) => {
+    const box = document.createElement('div');
+    box.className = 'overlay';
+    box.style.zIndex = '60';
+    box.innerHTML = html`<aside class="drawer modal confirm" role="alertdialog" aria-label="${title}">
+        <h3>${title}</h3><p class="muted" style="margin:8px 0 18px">${body}</p>
+        <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" data-c="0">Cancel</button><button class="btn primary" data-c="1">${okLabel}</button></div>
+      </aside>`.s;
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); finish(false); } };
+    const finish = (v) => { document.removeEventListener('keydown', onKey, true); box.remove(); resolve(v); };
+    box.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-c]');
+      if (b) finish(b.dataset.c === '1'); else if (e.target === box) finish(false);
+    });
+    document.addEventListener('keydown', onKey, true); // runs before the page's own Escape handling
+    document.body.appendChild(box);
+    box.querySelector('[data-c="1"]').focus();
+  });
+}
+
+const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '#');
+
+async function loadPulse(sub) {
+  const tab = sub === 'brief' ? 'setup' : (['ideas', 'trends', 'pools', 'playbook', 'setup'].includes(sub) ? sub : 'ideas');
+  if (!state.me.communities.length) {
+    return setPage(html`<div class="topbar"><h1>Pulse</h1></div>${onboarding(null)}`);
+  }
+  const community = state.scope === 'all' ? undefined : state.scope;
+  const tabBtn = (id, label) => html`<button class="${tab === id ? 'active' : ''}" data-nav="#/pulse/${id}">${label}</button>`;
+  const head = html`<div class="topbar"><h1>Pulse</h1><div class="tools">
+      ${scopeSelect(null)}
+      <select data-pulse-change="days" aria-label="Time range">
+        ${[[1, 'Last 24 hours'], [7, 'Last 7 days'], [14, 'Last 14 days'], [30, 'Last 30 days']].map(([n, l]) => html`<option value="${n}" ${pulseState.days === n ? 'selected' : ''}>${l}</option>`)}
+      </select></div></div>
+    <div class="tabs">${tabBtn('ideas', 'Ideas')}${tabBtn('trends', 'Market trends')}${tabBtn('pools', 'Pools')}${tabBtn('playbook', 'Playbook')}${tabBtn('setup', 'Setup')}</div>`;
+  const body = tab === 'ideas' ? await pulseIdeas(community)
+    : tab === 'trends' ? await pulseTrends(community)
+    : tab === 'pools' ? await pulsePools(community)
+    : tab === 'setup' ? await pulseSetup()
+    : await pulsePlaybook(community);
+  setPage(html`${head}${body}`);
+}
+
+/* ---------------------------------------------------------------- */
+/* Ideas                                                             */
+/* ---------------------------------------------------------------- */
+function pulseRow(d) {
+  const open = d.kind === 'question' && !d.staffReplied && !d.replies;
+  const btn = (status, label, kind = '') => html`<button class="btn ${kind}" data-pulse="status" data-id="${d.id}" data-status="${status}">${label}</button>`;
+  return html`<div class="row static">
+    <div class="rowmain">
+      <div class="who">${d.username}
+        <span class="tag ${P_KIND_CLS[d.kind]}">${P_KIND[d.kind]}</span>
+        ${d.status === 'starred' && html`<span class="tag">Starred</span>`}
+        ${d.status === 'done' && html`<span class="tag ok">Done</span>`}
+        ${d.replied && html`<span class="tag ok">Replied from Sentinel</span>`}
+        ${d.draftReady && html`<span class="tag info">Draft ready</span>`}
+        ${open && !d.replied && html`<span class="tag bad">Unanswered</span>`}
+        ${d.replies > 0 && html`<span class="tag">${d.replies} ${d.replies === 1 ? 'reply' : 'replies'}</span>`}</div>
+      <div class="ptxt">${d.text}</div>
+      <div class="pmeta">${d.communityName}${d.channelName && d.channelName !== d.communityName ? ` · #${d.channelName}` : ''} · ${ago(d.createdAt)}
+        ${d.topics.slice(0, 3).map((t) => html` <button class="chip sm" data-pulse="topic" data-topic="${t}">${t}</button>`)}
+        ${d.link && html` <a class="nowrap" href="${d.link}" target="_blank" rel="noopener noreferrer">Open in chat ↗</a>`}</div>
+    </div>
+    <div class="actions">
+      ${!d.replied && html`<button class="btn primary" data-pulse="draft" data-id="${d.id}">${d.draftReady ? 'Review draft' : 'Draft reply'}</button>`}
+      ${d.status === 'starred' ? btn('new', 'Unstar') : btn('starred', 'Star')}
+      ${d.status === 'done' ? btn('new', 'Reopen') : btn('done', 'Done')}
+      ${d.status !== 'dismissed' && btn('dismissed', 'Dismiss')}
+    </div>
+  </div>`;
+}
+
+async function pulseIdeas(community) {
+  const base = { community, days: pulseState.days };
+  const [ov, list] = await Promise.all([
+    api(`/pulse/overview${qs(base)}`),
+    api(`/pulse/discussions${qs({ ...base, kind: pulseState.kind === 'all' ? undefined : pulseState.kind, topic: pulseState.topic || undefined, status: pulseState.showDone ? undefined : 'active' })}`)
+  ]);
+  const t = ov.totals;
+  const kindTab = (id, label) => html`<button class="${pulseState.kind === id ? 'active' : ''}" data-pulse="kind" data-kind="${id}">${label}</button>`;
+  const column = (platform) => {
+    const items = list.filter((d) => d.platform === platform);
+    const has = communitiesOf(platform).length > 0;
+    return html`<div class="panel"><h2>${PLAT[platform]} <span>${items.length} shown</span></h2>
+      ${items.length ? items.map(pulseRow)
+        : html`<div class="empty">${has ? 'Nothing here for these filters.' : `No ${PLAT[platform]} community connected yet.`}</div>`}</div>`;
+  };
+  return html`
+    <div class="grid">
+      <div class="card accent"><div class="num">${num(t.ideas)}</div><div class="lbl">Ideas shared</div></div>
+      <div class="card ${t.openQuestions ? 'warn' : 'ok'}"><div class="num">${num(t.openQuestions)}</div><div class="lbl">Questions nobody answered</div></div>
+      <div class="card ${t.concerns ? 'bad' : ''}"><div class="num">${num(t.concerns)}</div><div class="lbl">Concerns raised</div></div>
+      <div class="card"><div class="num">${num(t.contributors)}</div><div class="lbl">People contributing</div></div>
+    </div>
+    ${ov.hotTopics.length > 0 && html`<div class="panel"><h2>What people are talking about <span>${pulseState.topic ? 'filtered by a topic' : 'click one to filter'}</span></h2>
+      <div class="pad chips">
+        ${pulseState.topic && html`<button class="chip on" data-pulse="topic" data-topic="">✕ ${pulseState.topic}</button>`}
+        ${ov.hotTopics.map((h) => html`<button class="chip ${pulseState.topic === h.topic ? 'on' : ''}" data-pulse="topic" data-topic="${h.topic}">${h.topic} <b>${h.users}</b><i class="${h.sentiment < -0.2 ? 'neg' : h.sentiment > 0.2 ? 'pos' : ''}"></i></button>`)}
+      </div></div>`}
+    <div class="tabs filters">${kindTab('all', 'Everything')}${kindTab('idea', 'Ideas')}${kindTab('question', 'Questions')}${kindTab('concern', 'Concerns')}${kindTab('praise', 'Praise')}${kindTab('discussion', 'Discussions')}
+      <label class="muted pcheck"><input type="checkbox" data-pulse-change="showdone" ${pulseState.showDone ? 'checked' : ''}> Show handled</label></div>
+    <div class="split">${column('telegram')}${column('discord')}</div>
+    ${ov.contributors.length > 0 && html`<div class="panel"><h2>Who is sharing <span>most active first</span></h2>
+      ${ov.contributors.map((p) => html`<div class="row static"><div class="plat ${p.platform}">${CODE[p.platform]}</div>
+        <div class="rowmain"><div class="who">${p.username}</div>
+        <div class="txt">${p.ideas} ${p.ideas === 1 ? 'idea' : 'ideas'} · ${p.questions} ${p.questions === 1 ? 'question' : 'questions'} · ${p.concerns} ${p.concerns === 1 ? 'concern' : 'concerns'} · ${p.replies} replies received</div></div></div>`)}</div>`}
+    <div class="muted" style="padding:4px 2px 16px">Pulse keeps ideas, questions and concerns for 30 days. Manage what it reads under <a data-nav="#/pulse/setup" style="cursor:pointer">Setup → Reading</a>.</div>`;
+}
+
+/* ---------------------------------------------------------------- */
+/* Market trends                                                     */
+/* ---------------------------------------------------------------- */
+function sourceStatus(s) {
+  if (s.needsKey) return html`<span class="tag">Needs X key</span>`;
+  if (!s.status) return html`<span class="tag">Not read yet</span>`;
+  return s.status.ok
+    ? html`<span class="tag ok">OK · ${s.status.count} stories</span>`
+    : html`<span class="tag bad" title="${s.status.error}">Failing</span>`;
+}
+
+async function pulseTrends(community) {
+  const [trends, src] = await Promise.all([
+    api(`/pulse/trends${qs({ community, days: pulseState.days, space: pulseState.space === 'all' ? undefined : pulseState.space })}`),
+    api(`/pulse/sources${qs({ community })}`)
+  ]);
+  const spaceTab = (id, label) => html`<button class="${pulseState.space === id ? 'active' : ''}" data-pulse="space" data-space="${id}">${label}</button>`;
+  const failing = src.sources.filter((s) => s.status && !s.status.ok).length;
+  return html`
+    <div class="tabs filters">${spaceTab('all', 'Everything')}${spaceTab('web3', 'Web3 and crypto')}${spaceTab('traditional', 'Traditional')}${spaceTab('social', 'Social')}</div>
+    <div class="panel"><h2>What is moving outside your community
+      <span>${src.lastRefresh ? `feeds read ${ago(src.lastRefresh)}` : (src.feederOn ? 'first read is on its way' : 'feeder is switched off')}
+        <button class="btn" data-pulse="refresh" style="margin-left:8px">Refresh now</button></span></h2>
+      ${trends.length ? trends.map((t) => html`<div class="row static"><div class="rowmain">
+          <div class="who"><a href="${safeUrl(t.url)}" target="_blank" rel="noopener noreferrer">${t.title}</a></div>
+          ${t.summary && html`<div class="ptxt">${t.summary}</div>`}
+          <div class="pmeta"><span class="tag">${t.source}</span> <span class="tag">${P_SPACE[t.space] || t.space}</span>
+            ${t.own && html`<span class="tag info">Your feed</span>`} ${ago(t.publishedAt)}
+            ${t.matchedTopics.length > 0 && html` <span class="tag net">Your community is also discussing: ${t.matchedTopics.join(', ')}</span>`}</div>
+        </div></div>`)
+        : html`<div class="empty"><b>No stories yet</b><br>${src.feederOn ? 'The feeds are read every half hour. Press Refresh now to read them straight away.' : 'The trend feeder is switched off in your settings file.'}</div>`}
+    </div>
+    <div class="panel"><h2>Sources <span>${failing ? `${failing} failing` : 'all reachable so far'}</span></h2>
+      ${src.sources.map((s) => {
+        const [plat, ...rest] = (s.ownerKey || '').split(':');
+        const tail = s.id.slice(s.id.indexOf('|') + 1);        // "reddit:solana"
+        const srcType = tail.split(':')[0], srcValue = tail.slice(srcType.length + 1);
+        return html`<div class="row static"><div class="rowmain"><div class="who">${s.label}${s.custom && html` <span class="tag info">Added by you</span>`}</div>
+          ${s.status && !s.status.ok && html`<div class="txt">${s.status.error}</div>`}</div>
+          ${sourceStatus(s)}
+          ${s.custom && html`<button class="btn ban" data-pulse="src-del" data-platform="${plat}" data-community="${rest.join(':')}" data-type="${srcType}" data-value="${srcValue}">Remove</button>`}</div>`;
+      })}
+      <div class="pad"><b>Add your own source</b>
+        <div class="srcform">
+          <select id="src-community">${communitiesOf(null).map((c) => html`<option value="${c.key}">${CODE[c.platform]} · ${c.name}</option>`)}</select>
+          <select id="src-type"><option value="reddit">Subreddit</option><option value="rss">RSS feed</option><option value="xaccount">X account${src.xConnected ? '' : ' (needs key)'}</option><option value="x">X search${src.xConnected ? '' : ' (needs key)'}</option></select>
+          <input id="src-value" placeholder="e.g. solana, or https://site.com/feed">
+          <button class="btn primary" data-pulse="src-add">Add</button>
+        </div>
+        <div class="muted" style="margin-top:6px">Only your community sees feeds you add. RSS addresses must be public https links.</div></div>
+    </div>`;
+}
+
+/* ---------------------------------------------------------------- */
+/* Playbook                                                          */
+/* ---------------------------------------------------------------- */
+const P_PRI = { high: 'bad', medium: 'net', low: '' };
+
+async function pulsePlaybook(community) {
+  const pb = await api(`/pulse/playbook${qs({ community, days: pulseState.days })}`);
+  if (!pb.items.length) {
+    return html`${pb.notice && html`<div class="panel"><div class="pad muted">${pb.notice}</div></div>`}
+      <div class="panel"><div class="empty"><b>Nothing to suggest yet</b><br>The playbook fills in as your chats are read and the feeds bring in stories. Check the Trends tab to see whether the feeds are working.</div></div>`;
+  }
+  pulseState.playbook = pb.items;
+  return html`
+    ${pb.notice && html`<div class="panel"><div class="pad muted">${pb.notice}</div></div>`}
+    
+    ${pb.items.map((it, i) => html`<div class="panel"><h2>${it.title} <span><span class="tag ${P_PRI[it.priority]}">${it.priority} priority</span></span></h2>
+      <div class="pad">
+        <p style="margin:0 0 10px">${it.why}</p>
+        <b>What to do</b>
+        <ul class="plist">${it.actions.map((a) => html`<li>${a}</li>`)}</ul>
+        <b>Draft post <span class="muted">(edit before you use it)</span></b>
+        <textarea id="pd-${i}" class="pdraft" rows="${Math.min(9, it.draft.split('\n').length + 2)}">${it.draft}</textarea>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn primary" data-pulse="post" data-i="${i}">Post…</button>
+          <button class="btn" data-pulse="copy" data-i="${i}">Copy draft</button>
+          <span class="muted">Good for: ${it.channels.map((c) => (c === 'x' ? 'X' : PLAT[c])).join(', ')}</span></div>
+        ${(it.evidence.discussions.length > 0 || it.evidence.trends.length > 0 || it.evidence.pools?.length > 0) && html`<details class="pev"><summary>Why this was suggested</summary>
+          ${it.evidence.discussions.map((d) => html`<div class="pmeta"><span class="plat ${d.platform}" style="display:inline-flex;width:20px;height:20px;font-size:9px">${CODE[d.platform]}</span> <b>${d.username}</b>: ${d.text}</div>`)}
+          ${it.evidence.trends.map((t) => html`<div class="pmeta"><span class="tag">${t.source}</span> <a href="${safeUrl(t.url)}" target="_blank" rel="noopener noreferrer">${t.title}</a></div>`)}
+          ${(it.evidence.pools || []).map((x) => html`<div class="pmeta"><span class="tag info">Pool</span> ${x.text} ${x.url && html`<a href="${safeUrl(x.url)}" target="_blank" rel="noopener noreferrer">Source</a>`}</div>`)}
+        </details>`}
+      </div></div>`)}`;
+}
+
+/* ---------------------------------------------------------------- */
+/* Project brief                                                     */
+/* ---------------------------------------------------------------- */
+/* ---------------------------------------------------------------- */
+/* Pools                                                             */
+/* ---------------------------------------------------------------- */
+const usd = (n) => (n == null ? 'n/a' : n >= 1e9 ? `$${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(1)}K` : `$${Math.round(n)}`);
+const POOL_KIND = { pair: 'Pool', token: 'All pools for a token', 'llama-pool': 'DefiLlama pool' };
+const EV_LABEL = { liquidity_drop: 'Liquidity dropped', liquidity_up: 'Liquidity grew', volume_spike: 'Trading spike', new_pool: 'New pool', apy_change: 'Yield changed' };
+const SEV_CLS = { high: 'bad', medium: 'net', info: 'info' };
+// pool-polish: duplicate dex/chain tag hidden, panel wording updated
+
+async function pulsePools(community) {
+  const d = await api(`/pulse/pools${qs({ community, days: pulseState.days })}`);
+  const comms = state.me.communities;
+  const chainName = (c) => d.chains[c] || c;
+  const row = (p) => {
+    const sn = p.snapshot;
+    const [plat, ...rest] = p.communityKey.split(':');
+    const where = html`data-platform="${plat}" data-community="${rest.join(':')}" data-id="${p.id}"`;
+    return html`<div class="row static"><div class="rowmain">
+      <div class="who">${p.label} <span class="tag">${POOL_KIND[p.kind]}</span>${sn?.dex && String(sn.dex).toLowerCase() !== String(chainName(p.chain)).toLowerCase() && html` <span class="tag">${sn.dex}</span>`}${p.chain && p.chain !== 'defillama' && html` <span class="tag">${chainName(p.chain)}</span>`}
+        ${p.status === 'error' && html` <span class="tag bad">${sn ? 'Last check failed' : 'Could not read'}</span>`}</div>
+      ${sn && html`<div class="poolstats">
+        <div><span>Liquidity</span><b>${usd(sn.tvlUsd)}</b>${p.tvlChange != null && html`<em class="${p.tvlChange < 0 ? 'neg' : 'pos'}">${p.tvlChange > 0 ? '+' : ''}${Math.round(p.tvlChange * 100)}% ${p.since}</em>`}</div>
+        ${p.kind !== 'llama-pool' && html`<div><span>24 hour volume</span><b>${usd(sn.volume24h)}</b></div>`}
+        ${sn.apy != null && html`<div><span>Yield (APY)</span><b>${sn.apy.toFixed(1)}%</b></div>`}
+        ${p.kind === 'token' && html`<div><span>Pools</span><b>${sn.pairCount}</b></div>`}</div>`}
+      ${p.kind === 'token' && sn?.pairs?.length > 0 && html`<div class="txt" style="white-space:normal">Largest: ${sn.pairs.map((x) => `${x.label} on ${x.dex} (${usd(x.tvlUsd)})`).join(', ')}</div>`}
+      ${p.error && html`<div class="txt" style="color:var(--danger);white-space:normal">${p.error}</div>`}
+      <div class="pmeta">${p.communityName}${sn ? ` · updated ${ago(sn.at)}` : ' · not read yet'}${p.url && html` · <a href="${safeUrl(p.url)}" target="_blank" rel="noopener noreferrer">Open source page ↗</a>`}</div>
+    </div>
+    <div class="actions"><button class="btn" data-pulse="pool-refresh" ${where}>Check now</button><button class="btn ban" data-pulse="pool-del" ${where} data-title="${p.label}">Remove</button></div></div>`;
+  };
+  return html`
+    <div class="panel"><h2>Updates <span>what changed in the pools you watch</span></h2>
+      ${d.events.length ? d.events.map((e) => html`<div class="row static"><div class="rowmain">
+          <div class="who">${e.poolLabel} <span class="tag ${SEV_CLS[e.severity]}">${EV_LABEL[e.type] || e.type}</span></div>
+          <div class="ptxt">${e.text}</div>
+          <div class="pmeta">${e.communityName} · ${ago(e.at)}${e.url && html` · <a href="${safeUrl(e.url)}" target="_blank" rel="noopener noreferrer">Source ↗</a>`}</div></div></div>`)
+        : html`<div class="empty"><b>No changes yet</b><br>${d.items.length ? 'Pulse checks your pools every 20 minutes and lists changes here: liquidity dropping or growing, trading spikes, and new pools for your token.' : 'Add a pool below and Pulse will tell you here when something changes.'}</div>`}
+    </div>
+    <div class="panel"><h2>Pools you watch <span>${d.items.length} ${d.items.length === 1 ? 'pool' : 'pools'}</span></h2>
+      ${d.items.length ? d.items.map(row) : html`<div class="empty"><b>Nothing watched yet</b><br>Paste a link to one of your pools below, or your token's address to watch every pool it has.</div>`}
+    </div>
+    ${poolFinderPanel(d)}
+    <div class="panel"><h2>Watch a pool or token <span>Osmosis, Raydium, PancakeSwap, Uniswap, QuickSwap and more</span></h2><div class="pad">
+      <div class="muted" style="margin-bottom:12px">Paste a link to a pool, for example app.osmosis.zone/pool/3505. Or choose "Every pool for a token", paste the token's contract address, and you will also hear when a <b>new</b> pool appears for it. That is worth knowing, because anyone can create a pool for your token. Liquidity and trading volume come from DEX Screener (free), except Osmosis pools, which come from Osmosis itself and show liquidity only. It does not provide APY. APY only appears for a DefiLlama pool link, and only if DefiLlama allows it.</div>
+      ${comms.some((c) => c.key === state.scope)
+        ? html`<div class="fld"><span>Adding to</span><b>${CODE[comms.find((c) => c.key === state.scope).platform]} · ${comms.find((c) => c.key === state.scope).name}</b><input type="hidden" id="pool-community" value="${state.scope}"><div class="muted">To use a different community, change it at the top right.</div></div>`
+        : html`<label class="fld"><span>Community</span><select id="pool-community"><option value="">Choose a community…</option>${comms.map((c) => html`<option value="${c.key}">${CODE[c.platform]} · ${c.name}</option>`)}</select></label>`}
+      <label class="fld"><span>What to watch</span><select id="pool-mode"><option value="pool">One pool</option><option value="token">Every pool for a token</option></select></label>
+      ${inp('pool-input', 'Link or address', '', 'https://app.osmosis.zone/pool/3505')}
+      <label class="fld"><span>Chain <em>only needed when you paste a bare address</em></span><select id="pool-chain"><option value="">Work it out from the link</option>${Object.entries(d.chains).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></label>
+      <button class="btn primary" data-pulse="pool-add">Start watching</button>
+    </div></div>`;
+}
+
+/* ---------------------------------------------------------------- */
+/* Post to your community and to X                                   */
+/* ---------------------------------------------------------------- */
+let postCtx = null; // { sources, channels, x }
+
+async function openPost(text, sources = []) {
+  const comms = state.me.communities;
+  $('#drawer-root').innerHTML = modalShell('Post…', html`<p class="muted">Loading your communities…</p>`).s;
+  const [chan, xs] = await Promise.all([
+    Promise.all(comms.filter((c) => c.platform === 'discord').map(async (c) => [c.key, await api(`/pulse/channels/discord/${enc(c.id)}`).catch(() => [])])),
+    Promise.all(comms.map(async (c) => [c.key, await api(`/pulse/x/${c.platform}/${enc(c.id)}`).catch(() => null)]))
+  ]);
+  postCtx = { sources, channels: Object.fromEntries(chan), x: Object.fromEntries(xs) };
+  $('#drawer-root').innerHTML = postPanel(text).s;
+  updatePostCount();
+}
+
+function postPanel(text) {
+  const comms = state.me.communities;
+  const dest = comms.map((c) => {
+    const ch = postCtx.channels[c.key] || [];
+    const can = c.platform === 'telegram' || ch.length > 0;
+    return html`<div class="postdest"><label class="chk"><input type="checkbox" data-post-target="${c.key}" ${can ? '' : 'disabled'}><span class="plat ${c.platform}">${CODE[c.platform]}</span>${c.name}</label>
+      ${c.platform === 'discord' && (ch.length ? html`<select data-post-channel="${c.key}">${ch.map((x) => html`<option value="${x.id}">#${x.name}</option>`)}</select>` : html`<span class="muted">The bot has no channel it can write in</span>`)}</div>`;
+  });
+  const xOpts = comms.filter((c) => postCtx.x[c.key]?.account?.connected).map((c) => html`<option value="api:${c.key}">Post to X as @${postCtx.x[c.key].account.handle} (${c.name})</option>`);
+  return modalShell('Post…', html`
+    <textarea id="post-text" class="pdraft" rows="8" data-pulse-input="post">${text}</textarea>
+    <div class="muted" id="post-count" style="margin-top:6px"></div>
+    <div id="post-flags"></div>
+    <h4>Where to post</h4>
+    ${dest}
+    <label class="fld" style="margin-top:14px"><span>On X</span><select id="post-x"><option value="none">Do not post to X</option><option value="intent">Open in X (free, you press Post on X)</option>${xOpts}</select></label>
+    <div class="muted">"Open in X" needs no keys and costs nothing: X opens with your text ready and you press Post there. Posting from Sentinel needs an X account connected under Setup, then X.</div>
+    <div class="pbtns"><button class="btn primary" data-pulse="post-go">Post</button><button class="btn" data-pulse="post-copy">Copy</button></div>`);
+}
+
+function updatePostCount() {
+  const el = $('#post-count');
+  if (!el) return;
+  const t = $('#post-text')?.value || '';
+  const x = $('#post-x')?.value || 'none';
+  const n = [...t.replace(/https?:\/\/\S+/gi, 'x'.repeat(23))].length;
+  let msg = `${t.length} characters.`;
+  if (x !== 'none') msg += ` On X it counts as ${n} of 280${n > 280 ? ', which is too long for X' : ''}.`;
+  if (x.startsWith('api:')) msg += ` Posting through your X account costs about ${/https?:\/\/\S+/i.test(t) ? '$0.20, because it has a link' : '$0.015'}.`;
+  el.textContent = msg;
+}
+
+const SETUP_SECTIONS = [['brief', 'Project brief'], ['knowledge', 'Knowledge'], ['drafting', 'Drafting'], ['focus', 'Focus'], ['x', 'X'], ['reading', 'Reading']];
+const KIND_LABEL = { url: 'Web page', text: 'Pasted text', defillama: 'DefiLlama data' };
+const HOURS_LABEL = { 6: '6 hours', 12: '12 hours', 24: 'day', 72: '3 days', 168: 'week' };
+const lines = (a) => (a || []).join('\n');
+const inp = (id, label, val, ph = '') => html`<label class="fld"><span>${label}</span><input id="${id}" value="${val}" placeholder="${ph}"></label>`;
+const area = (id, label, val, hint, rows = 4) => html`<label class="fld"><span>${label} <em class="muted">${hint}</em></span><textarea id="${id}" rows="${rows}">${val}</textarea></label>`;
+
+async function pulseSetup() {
+  // One community selector for the whole Pulse page: the one at the top right. Setup follows it,
+  // so a brief or a knowledge document can never be saved to a community other than the one shown.
+  const comms = state.me.communities;
+  const c = comms.find((x) => x.key === state.scope);
+  if (!c) {
+    return html`<div class="panel"><div class="pad"><div class="empty"><b>Choose a community to set up.</b><br>Use the community selector at the top right of this page. The brief, knowledge, drafting and focus settings below belong to one community at a time.</div></div></div>`;
+  }
+  const section = SETUP_SECTIONS.some(([id]) => id === pulseState.setup) ? pulseState.setup : 'brief';
+  const body = section === 'brief' ? await setupBrief(c) : section === 'knowledge' ? await setupKnowledge(c)
+    : section === 'drafting' ? await setupDrafting(c) : section === 'focus' ? await setupFocus(c) : section === 'x' ? await setupX(c) : await setupReading();
+  return html`
+    <div class="panel"><div class="pad"><div class="muted">Setting up</div><b>${CODE[c.platform]} · ${c.name}</b>
+      <div class="muted" style="margin-top:4px">To set up a different community, change it at the top right.</div></div></div>
+    <div class="subnav">${SETUP_SECTIONS.map(([id, l]) => html`<button class="${section === id ? 'active' : ''}" data-pulse="setup-section" data-section="${id}">${l}</button>`)}</div>
+    ${body}`;
+}
+
+async function setupBrief(c) {
+  const b = await api(`/pulse/brief/${c.platform}/${enc(c.id)}`);
+  return html`<div class="panel"><h2>Project brief <span>short facts the drafter may state</span></h2>
+    <div class="pad">
+      <div class="muted" style="margin-bottom:12px">For longer material such as docs pages, FAQs and live numbers, use the Knowledge section. Keep the brief to a few confirmed facts and your rules.</div>
+      ${inp('br-name', 'Project name', b.projectName, 'e.g. Quicksilver')}
+      ${inp('br-ticker', 'Token ticker', b.ticker, 'e.g. QCK')}
+      ${area('br-about', 'What the project is', b.about, 'two or three plain sentences', 3)}
+      ${area('br-facts', 'Confirmed facts', lines(b.facts), 'one per line. Leave out anything not yet announced.', 6)}
+      ${area('br-links', 'Official links', (b.links || []).map((l) => `${l.label} | ${l.url}`).join('\n'), 'one per line as  Label | https://link  . The only links a reply may contain, besides your knowledge sources.', 4)}
+      ${area('br-policy', 'Policy rules', b.policy, 'the drafter must follow these', 3)}
+      ${area('br-banned', 'Words and phrases never to use', lines(b.bannedPhrases), 'one per line, added to the built-in checks (guaranteed, 10x, price predictions, DM me ...)', 3)}
+      ${inp('br-tone', 'Tone', b.tone)}
+      <div style="margin-top:12px"><button class="btn primary" data-pulse="brief-save" data-platform="${c.platform}" data-community="${c.id}">Save brief</button></div>
+    </div></div>`;
+}
+
+async function setupKnowledge(c) {
+  const k = await api(`/pulse/knowledge/${c.platform}/${enc(c.id)}`);
+  const where = html`data-platform="${c.platform}" data-community="${c.id}"`;
+  const hours = (id, def) => html`<select id="${id}">${k.hours.map((h) => html`<option value="${h}" ${h === def ? 'selected' : ''}>Refresh every ${HOURS_LABEL[h]}</option>`)}</select>`;
+  const status = (s) => s.status === 'error' ? html`<span class="tag bad">${s.chunkCount ? 'Last read failed' : 'Could not read'}</span>`
+    : s.status === 'pending' ? html`<span class="tag">Reading</span>` : html`<span class="tag ok">Working</span>`;
+  return html`
+    <div class="panel"><h2>What Pulse knows <span>${k.sources.length} ${k.sources.length === 1 ? 'source' : 'sources'}</span></h2>
+      ${k.sources.length ? k.sources.map((s) => html`<div class="row static"><div class="rowmain">
+          <div class="who">${s.title || s.url} <span class="tag">${KIND_LABEL[s.type]}</span> ${status(s)}</div>
+          <div class="txt">${s.chunkCount} ${s.chunkCount === 1 ? 'section' : 'sections'} · ${s.fetchedAt ? `updated ${ago(s.fetchedAt)}` : 'not read yet'}${s.type === 'text' ? '' : ` · refreshes every ${HOURS_LABEL[s.refreshHours] || 'day'}`}</div>
+          ${s.error && html`<div class="txt" style="color:var(--danger)">${s.error}</div>`}</div>
+        <div class="actions">${s.type !== 'text' && html`<button class="btn" data-pulse="know-refresh" ${where} data-id="${s.id}">Refresh</button>`}
+          <button class="btn ban" data-pulse="know-del" ${where} data-id="${s.id}" data-title="${s.title || s.url}">Remove</button></div></div>`)
+        : html`<div class="empty"><b>Nothing here yet</b><br>Add your docs page, FAQ or tokenomics below. Until then, replies only use the short facts in your Project brief.</div>`}
+    </div>
+    <div class="panel"><h2>Add a web page <span>docs, FAQ, tokenomics, announcements</span></h2><div class="pad">
+      <div class="muted" style="margin-bottom:10px">Pulse reads the page, keeps the text, and re-reads it on a schedule so answers stay current. It must be a public https link. Pages that only load with JavaScript can not be read, so paste their text instead.</div>
+      ${inp('kn-url', 'Page address', '', 'https://docs.yourproject.xyz/staking')}
+      ${inp('kn-url-title', 'Name (optional)', '', 'e.g. Staking docs')}
+      <div class="srcform">${hours('kn-url-hours', 24)}<button class="btn primary" data-pulse="know-add-url" ${where}>Add and read</button></div></div></div>
+    <div class="panel"><h2>Paste text <span>for anything not on a public page</span></h2><div class="pad">
+      ${inp('kn-text-title', 'Name', '', 'e.g. Unstaking FAQ')}
+      ${area('kn-text', 'Text', '', `up to ${k.maxText.toLocaleString('en')} characters. Use blank lines between topics, and lines starting with ## for headings.`, 6)}
+      <button class="btn primary" data-pulse="know-add-text" ${where}>Add text</button></div></div>
+    <div class="panel"><h2>Find your project on DefiLlama <span>keeps its total value locked up to date</span></h2><div class="pad">
+      <div class="muted" style="margin-bottom:10px">DefiLlama tracks how much money is locked in thousands of crypto projects. Type your project's name, pick it from the list, and Sentinel keeps its TVL (total value locked) up to date. Replies can then quote it with the time it was read. To track the liquidity and trading volume of your own pools, use the Pools tab instead.</div>
+      <div class="srcform"><input id="kn-find" placeholder="e.g. quicksilver"><button class="btn primary" data-pulse="know-find" ${where}>Search</button></div>
+      <label class="chk muted" style="margin-top:10px"><input type="checkbox" id="kn-find-yield"> Also try pool yields (APY). DefiLlama may only allow this on a paid plan, and if so you will see a message here.</label>
+      <div id="know-find-results" style="margin-top:10px"></div></div></div>
+    <div class="panel"><h2>Test what Pulse knows <span>no message is sent</span></h2><div class="pad">
+      <div class="muted" style="margin-bottom:10px">Type a question as a member would. You will see exactly which sources a draft would use. If nothing shows, the draft says the team will check.</div>
+      <div class="srcform"><input id="kn-q" placeholder="e.g. how long does unstaking take?"><button class="btn primary" data-pulse="know-ask" ${where}>Ask</button></div>
+      <div id="know-results" style="margin-top:10px"></div></div></div>`;
+}
+
+async function setupX(c) {
+  const [x, src] = await Promise.all([api(`/pulse/x/${c.platform}/${enc(c.id)}`), api(`/pulse/sources${qs({ community: c.key })}`)]);
+  const where = html`data-platform="${c.platform}" data-community="${c.id}"`;
+  const mine = src.sources.filter((q) => q.ownerKey === c.key && q.custom && /\|x(account)?:/.test(q.id));
+  const pct = x.limitUsd ? Math.min(100, Math.round((x.spendUsd / x.limitUsd) * 100)) : 0;
+  const money = (n) => `$${n.toFixed(2)}`;
+  const key = (id) => { const tail = id.slice(id.indexOf('|') + 1); const t = tail.split(':')[0]; return { type: t, value: tail.slice(t.length + 1) }; };
+  return html`
+    <div class="panel"><h2>Reading X <span>${x.readingOn ? 'on' : 'off'}</span></h2><div class="pad">
+      ${x.readingOn ? html`
+        <div class="meter ${pct >= 80 ? 'hot' : ''}"><i style="width:${pct}%"></i></div>
+        <div class="muted" style="margin:8px 0 12px">About ${money(x.spendUsd)} of ${money(x.limitUsd)} used this month. This is an estimate: X charges about half a cent for every post it sends. X is read every ${x.everyHours} hours${x.lastRun ? ` (last ${ago(x.lastRun)})` : ''}, and Sentinel stops reading it when the limit is reached.</div>
+        <button class="btn primary" data-pulse="x-refresh">Read X now</button>`
+        : html`<div class="muted">${x.bearerSet ? 'X reading is off because the monthly limit is set to 0.' : 'X reading needs a key. Add X_BEARER_TOKEN to your .env file and restart. X charges for every post it sends, so Sentinel also keeps a monthly limit (X_MONTHLY_BUDGET_USD, 10 dollars unless you change it).'}</div>`}
+      <div class="muted" style="margin-top:12px">${x.defaultFeeds ? 'Sentinel reads three general searches (airdrops and campaigns, community ideas, crypto talk) plus what you add below. Posts appear under Market trends.' : 'Only what you add below is read.'}</div>
+    </div></div>
+    <div class="panel"><h2>Watch on X <span>accounts and searches for ${c.name}</span></h2>
+      ${mine.length ? mine.map((q) => { const k = key(q.id); return html`<div class="row static"><div class="rowmain"><div class="who">${q.label}</div>${q.status && !q.status.ok && html`<div class="txt" style="color:var(--danger);white-space:normal">${q.status.error}</div>`}</div>
+        <button class="btn ban" data-pulse="src-del" ${where} data-type="${k.type}" data-value="${k.value}">Remove</button></div>`; })
+        : html`<div class="empty"><b>Nothing added yet</b><br>Add accounts you want to follow, such as your own project, partners or competitors.</div>`}
+      <div class="pad"><div class="srcform">
+        <select id="xw-type"><option value="xaccount">An X account</option><option value="x">A search</option></select>
+        <input id="xw-value" placeholder="e.g. osmosiszone, or: liquid staking airdrop">
+        <button class="btn primary" data-pulse="x-watch-add" ${where}>Add</button></div>
+        <div class="muted" style="margin-top:6px">Each one is read every ${x.everyHours} hours and counts towards the monthly limit above.</div></div>
+    </div>
+    <div class="panel"><h2>Post to X from Sentinel <span>${x.account.connected ? `connected as @${x.account.handle}` : 'not connected'}</span></h2><div class="pad">
+      ${x.account.connected ? html`
+        <div class="muted" style="margin-bottom:12px">Posts you approve can go to @${x.account.handle}. Each costs about $${x.costs.post.toFixed(3)}, or $${x.costs.postWithLink.toFixed(2)} if it contains a link, and Sentinel shows the cost before you post. The bill goes to the X developer account that owns these keys.</div>
+        <button class="btn ban" data-pulse="x-disconnect" ${where}>Disconnect</button>`
+        : html`
+        <div class="muted" style="margin-bottom:12px">You do not need this to post to X. The Post window also has <b>Open in X</b>, which is free and needs no keys. Connect only if you want Sentinel to post for you.</div>
+        ${!x.secretSet && html`<div class="warnbox" style="margin-bottom:12px"><b>One step first</b><br>Add SENTINEL_SECRET to your .env file and restart. It encrypts your X keys before they are saved. The setup notes in .env.example show how to make one.</div>`}
+        <div class="muted" style="margin-bottom:12px">Connect securely through X authorization. Sentinel never asks you to copy four keys into this page. Posts still require your approval and show the estimated cost before sending.</div>
+        <button class="btn primary" data-pulse="x-authorize" data-platform="${c.platform}" data-community="${c.id}" ${x.secretSet ? '' : 'disabled'}>Connect your X account</button>
+        ${!x.secretSet && html`<div class="warnbox" style="margin-top:10px">Set SENTINEL_SECRET in your server environment first so authorization tokens can be encrypted at rest.</div>`}`}
+    </div></div>`;
+}
+
+async function setupDrafting(c) {
+  const [ai, m] = await Promise.all([api('/pulse/ai'), api(`/pulse/modes/${c.platform}/${enc(c.id)}`)]);
+  return html`
+    <div class="panel"><h2>How replies are written <span>${ai.label}</span></h2>
+      <div class="pad muted">${ai.mode === 'none'
+        ? 'No AI model is connected, so the free built-in drafter writes replies from your brief, knowledge and the latest stories. To add an AI model later, put a key in your .env file (see .env.example). Nothing else changes.'
+        : 'The AI writes replies, but only from your brief, knowledge and the latest stories. Every draft is checked against your rules, and nothing is posted until you press Send.'}</div></div>
+    <div class="panel"><h2>Draft preparation <span>for ${c.name}</span></h2><div class="pad">
+      <div class="muted" style="margin-bottom:10px">Manual: you click Draft reply. Auto: a draft is prepared when the message arrives and waits for you. Nothing is ever posted without your approval. With an AI model connected, each auto draft costs a little, and the hourly limit in your .env caps it.</div>
+      ${[['question', 'Questions'], ['idea', 'Ideas'], ['concern', 'Concerns']].map(([k, l]) => html`<label class="fld"><span>${l}</span>
+        <select id="mode-${k}"><option value="manual" ${m.modes[k] === 'manual' ? 'selected' : ''}>Manual</option><option value="auto" ${m.modes[k] === 'auto' ? 'selected' : ''}>Auto-prepare drafts</option></select></label>`)}
+      <button class="btn primary" data-pulse="modes-save" data-platform="${c.platform}" data-community="${c.id}">Save</button></div></div>`;
+}
+
+async function setupFocus(c) {
+  const m = await api(`/pulse/modes/${c.platform}/${enc(c.id)}`);
+  return html`<div class="panel"><h2>Focus <span>show only what you switch on</span></h2><div class="pad">
+    <div class="muted" style="margin-bottom:10px">Pick the topics you want news and playbook ideas about. Pulse also adds a news search for each one. Pick nothing to see everything.</div>
+    <div class="chips">${m.presets.map((p) => html`<label class="chip ${m.focus.topics.includes(p.id) ? 'on' : ''}"><input type="checkbox" data-focus="${p.id}" ${m.focus.topics.includes(p.id) ? 'checked' : ''}> ${p.label}</label>`)}</div>
+    <label class="fld" style="margin-top:12px"><span>Your own keywords <em class="muted">one per line, e.g. quicksilver or stATOM</em></span><textarea id="focus-custom" rows="3">${m.focus.custom.join('\n')}</textarea></label>
+    <button class="btn primary" data-pulse="focus-save" data-platform="${c.platform}" data-community="${c.id}">Save focus</button></div></div>`;
+}
+
+async function setupReading() {
+  const enabled = await api('/pulse/enabled');
+  return html`<div class="panel"><h2>What Pulse reads <span>per community</span></h2>
+    <div class="pad muted">Pulse keeps ideas, questions and concerns (up to 500 characters each) so you can find them later. Scam messages are never kept here, private Discord channels members cannot see are skipped, admins are not read, and everything is deleted after the retention period. Switch off any community you do not want read.</div>
+    ${enabled.map((c) => html`<div class="row static"><div class="plat ${c.platform}">${CODE[c.platform]}</div>
+      <div class="rowmain"><div class="who">${c.name}</div></div>
+      <button class="btn ${c.enabled ? 'release' : ''}" data-pulse="enabled" data-platform="${c.platform}" data-community="${c.id}" data-on="${c.enabled ? '1' : ''}">${c.enabled ? 'Reading: On' : 'Reading: Off'}</button></div>`)}</div>`;
+}
+
+/* ---------------------------------------------------------------- */
+/* Draft panel                                                       */
+/* ---------------------------------------------------------------- */
+const ROUTE_LABEL = { price: 'Price question', support: 'Support problem', project: 'Project question', market: 'Market question', idea: 'Idea', general: 'General' };
+let currentDraft = null; // { id, sources }
+
+function draftPanel(id, d) {
+  currentDraft = { id, to: d.to, sources: [...d.sources.map((s) => s.url), ...(d.knowledge || []).map((k) => k.url).filter(Boolean)] };
+  const flagBox = d.flags.length > 0 && html`<div class="warnbox"><b>Fix before sending</b><ul>${d.flags.map((f) => html`<li><code>${f.phrase}</code>: ${f.why}</li>`)}</ul></div>`;
+  return modalShell(`Reply to ${d.to}`, html`
+    <div class="pmeta" style="margin-top:0"><span class="tag net">${ROUTE_LABEL[d.primary]}</span>
+      ${d.routes.filter((r) => r !== d.primary).map((r) => html`<span class="tag">${ROUTE_LABEL[r]}</span>`)}
+      <span class="tag ${d.via === 'ai' ? 'info' : ''}">${d.via === 'ai' ? 'Written by AI' : 'Built-in drafter'}</span></div>
+    <div class="quote">${d.original}</div>
+    ${d.note && html`<div class="muted" style="margin:8px 0">${d.note}</div>`}
+    ${!d.hasBrief && html`<div class="muted" style="margin:8px 0">Your Project brief is empty, so this reply stays general. Fill it in on the Project brief tab for better drafts.</div>`}
+    <textarea id="draft-text" class="pdraft" rows="7" data-pulse-input="draft">${d.text}</textarea>
+    <div id="draft-flags">${flagBox}</div>
+    ${d.knowledge?.length > 0 && html`<details class="pev" open><summary>Based on your knowledge bank</summary>${d.knowledge.map((k) => html`<div class="pmeta"><span class="tag ${k.live ? 'info' : ''}">${k.live ? 'Live data' : 'Docs'}</span> ${k.url ? html`<a href="${safeUrl(k.url)}" target="_blank" rel="noopener noreferrer">${k.title}</a>` : k.title}${k.live && k.at ? ` · as of ${ago(k.at)}` : ''}</div>`)}</details>`}
+    ${d.sources.length > 0 && html`<details class="pev" open><summary>Based on these stories</summary>${d.sources.map((s) => html`<div class="pmeta"><span class="tag">${s.source}</span> <a href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">${s.title}</a> · ${ago(s.publishedAt)}</div>`)}</details>`}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+      <button class="btn primary" data-pulse="send-draft">Approve and send reply</button>
+      <button class="btn" data-pulse="copy-draft">Copy</button>
+      <button class="btn" data-pulse="draft" data-id="${id}" data-fresh="1">Regenerate</button></div>
+    <div class="muted" style="margin-top:8px">Sending posts this as a reply to ${d.to}'s message, from the bot. You can also copy it and post it yourself.</div>`);
+}
+
+/* ---------------------------------------------------------------- */
+/* Events                                                            */
+/* ---------------------------------------------------------------- */
+const reloadPulse = () => loadPulse(route().sub).catch(fail);
+
+// Adds a knowledge source and says plainly whether it could be read. Web and DefiLlama sources can take a few seconds.
+async function addKnowledge(el, body) {
+  const label = el.textContent;
+  el.disabled = true; el.textContent = 'Reading…';
+  try {
+    const r = await api(`/pulse/knowledge/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'POST', body });
+    if (r.result.ok) toast(`Added. ${r.source.chunkCount} ${r.source.chunkCount === 1 ? 'section' : 'sections'} read.`);
+    else toast(`Added, but it could not be read: ${r.result.error}`, true);
+    return await reloadPulse();
+  } finally { el.disabled = false; el.textContent = label; }
+}
+
+const PULSE_ACTS = {
+  kind: (el) => { pulseState.kind = el.dataset.kind; return reloadPulse(); },
+  topic: (el) => { pulseState.topic = el.dataset.topic; return reloadPulse(); },
+  space: (el) => { pulseState.space = el.dataset.space; return reloadPulse(); },
+  status: async (el) => {
+    el.disabled = true;
+    await api(`/pulse/discussions/${enc(el.dataset.id)}/status`, { method: 'POST', body: { status: el.dataset.status } });
+    return reloadPulse();
+  },
+  refresh: async (el) => {
+    el.disabled = true; el.textContent = 'Reading feeds…';
+    try {
+      const r = await api('/pulse/refresh', { method: 'POST' });
+      toast(`${r.added} new ${r.added === 1 ? 'story' : 'stories'}${r.failed ? `, ${r.failed} source${r.failed === 1 ? '' : 's'} failed` : ''}`);
+    } finally { await reloadPulse(); }
+  },
+  copy: async (el) => {
+    try { await navigator.clipboard.writeText($(`#pd-${el.dataset.i}`).value); toast('Draft copied'); }
+    catch { toast('Could not copy. Select the text and copy it manually.', true); }
+  },
+  enabled: async (el) => {
+    await api(`/pulse/enabled/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'POST', body: { enabled: !el.dataset.on } });
+    return reloadPulse();
+  },
+  'src-add': async () => {
+    const [platform, ...rest] = $('#src-community').value.split(':');
+    await api(`/pulse/sources/${platform}/${enc(rest.join(':'))}`, { method: 'POST', body: { type: $('#src-type').value, value: $('#src-value').value } });
+    toast('Source added. It is read on the next refresh.');
+    return reloadPulse();
+  },
+  draft: async (el) => {
+    const id = el.dataset.id;
+    $('#drawer-root').innerHTML = modalShell('Drafting a reply…', html`<p class="muted">Reading the message, your brief and the latest stories…</p>`).s;
+    try {
+      const d = await api(`/pulse/discussions/${enc(id)}/draft`, { method: 'POST', body: { fresh: el.dataset.fresh === '1' } });
+      $('#drawer-root').innerHTML = draftPanel(id, d).s;
+    } catch (e) { closeProfile(); throw e; }
+  },
+  'copy-draft': async () => {
+    try { await navigator.clipboard.writeText($('#draft-text').value); toast('Reply copied'); }
+    catch { toast('Could not copy. Select the text and copy it manually.', true); }
+  },
+  'send-draft': async (el) => {
+    const text = $('#draft-text').value.trim();
+    if (!text) return toast('The reply is empty', true);
+    if (!(await askConfirm('Post this reply?', `It will appear in the chat as a reply to ${currentDraft.to}, from the bot.`, 'Post reply'))) return;
+    el.disabled = true;
+    try {
+      await api(`/pulse/discussions/${enc(currentDraft.id)}/send`, { method: 'POST', body: { text, approved: true, sources: currentDraft.sources } });
+      toast('Reply posted');
+      closeProfile();
+      return reloadPulse();
+    } catch (e) {
+      el.disabled = false;
+      if (e.flags) $('#draft-flags').innerHTML = html`<div class="warnbox"><b>Fix before sending</b><ul>${e.flags.map((f) => html`<li><code>${f.phrase}</code>: ${f.why}</li>`)}</ul></div>`.s;
+      throw e;
+    }
+  },
+  'brief-save': async (el) => {
+    const split = (id) => $(id).value.split('\n').map((x) => x.trim()).filter(Boolean);
+    const links = split('#br-links').map((l) => { const i = l.indexOf('|'); return i < 0 ? { label: 'Link', url: l } : { label: l.slice(0, i).trim(), url: l.slice(i + 1).trim() }; });
+    await api(`/pulse/brief/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'POST', body: {
+      projectName: $('#br-name').value, ticker: $('#br-ticker').value, about: $('#br-about').value,
+      facts: split('#br-facts'), links, policy: $('#br-policy').value, bannedPhrases: split('#br-banned'), tone: $('#br-tone').value } });
+    toast('Brief saved');
+    return reloadPulse();
+  },
+  'setup-section': (el) => { pulseState.setup = el.dataset.section; return reloadPulse(); },
+  'know-add-url': async (el) => {
+    const url = $('#kn-url').value.trim();
+    if (!url) return toast('Type the page address first', true);
+    return addKnowledge(el, { type: 'url', url, title: $('#kn-url-title').value, refreshHours: Number($('#kn-url-hours').value) });
+  },
+  'know-add-text': (el) => addKnowledge(el, { type: 'text', title: $('#kn-text-title').value, text: $('#kn-text').value }),
+  'know-refresh': async (el) => {
+    el.disabled = true; el.textContent = 'Reading…';
+    try {
+      const r = await api(`/pulse/knowledge/${el.dataset.platform}/${enc(el.dataset.community)}/${enc(el.dataset.id)}/refresh`, { method: 'POST' });
+      toast(r.result.ok ? 'Updated' : `Could not read it: ${r.result.error}`, !r.result.ok);
+    } finally { await reloadPulse(); }
+  },
+  'know-del': async (el) => {
+    if (!(await askConfirm('Remove this source?', `“${el.dataset.title}” will no longer be used in replies.`, 'Remove'))) return;
+    await api(`/pulse/knowledge/${el.dataset.platform}/${enc(el.dataset.community)}/${enc(el.dataset.id)}`, { method: 'DELETE' });
+    return reloadPulse();
+  },
+  'know-ask': async (el) => {
+    const question = $('#kn-q').value.trim();
+    if (question.length < 3) return toast('Type a question first', true);
+    el.disabled = true;
+    try {
+      const hits = await api(`/pulse/knowledge/${el.dataset.platform}/${enc(el.dataset.community)}/ask`, { method: 'POST', body: { question } });
+      $('#know-results').innerHTML = html`${hits.length
+        ? hits.map((h) => html`<div class="row static"><div class="rowmain"><div class="who">${h.title} ${h.live && html`<span class="tag info">Live · as of ${ago(h.at)}</span>`}</div><div class="ptxt">${h.excerpt}</div></div></div>`)
+        : html`<div class="empty">Nothing in the knowledge bank answers this. A draft would say the team will check.</div>`}`.s;
+    } finally { el.disabled = false; }
+  },
+  'modes-save': async (el) => {
+    const modes = {};
+    for (const k of ['question', 'idea', 'concern']) modes[k] = $(`#mode-${k}`).value;
+    await api(`/pulse/modes/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'POST', body: { modes } });
+    toast('Drafting settings saved. They apply to new messages.');
+  },
+  'focus-save': async (el) => {
+    const topics = [...document.querySelectorAll('[data-focus]')].filter((x) => x.checked).map((x) => x.dataset.focus);
+    const custom = $('#focus-custom').value.split('\n').map((x) => x.trim()).filter(Boolean);
+    await api(`/pulse/focus/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'POST', body: { topics, custom } });
+    toast('Focus saved. News for these topics arrives on the next refresh.');
+    return reloadPulse();
+  },
+  'pool-add': async (el) => {
+    const input = $('#pool-input').value.trim();
+    if (!input) return toast('Paste a link or an address first', true);
+    if (!$('#pool-community').value) return toast('Choose a community first', true);
+    const [platform, ...rest] = $('#pool-community').value.split(':');
+    el.disabled = true; el.textContent = 'Reading…';
+    try {
+      const r = await api(`/pulse/pools/${platform}/${enc(rest.join(':'))}`, { method: 'POST', body: { mode: $('#pool-mode').value, input, chain: $('#pool-chain').value } });
+      if (r.result.ok) toast('Added. Pulse will tell you when it changes.');
+      else toast(`Added, but it could not be read yet: ${r.result.error}`, true);
+    } finally { await reloadPulse(); }
+  },
+  'pool-refresh': async (el) => {
+    el.disabled = true; el.textContent = 'Checking…';
+    try {
+      const r = await api(`/pulse/pools/${el.dataset.platform}/${enc(el.dataset.community)}/${enc(el.dataset.id)}/refresh`, { method: 'POST' });
+      toast(r.result.ok ? (r.result.events ? 'Checked. Something changed.' : 'Checked. No change worth reporting.') : `Could not read it: ${r.result.error}`, !r.result.ok);
+    } finally { await reloadPulse(); }
+  },
+  'pool-del': async (el) => {
+    if (!(await askConfirm('Stop watching this?', `“${el.dataset.title}” and its updates will be removed.`, 'Remove'))) return;
+    await api(`/pulse/pools/${el.dataset.platform}/${enc(el.dataset.community)}/${enc(el.dataset.id)}`, { method: 'DELETE' });
+    return reloadPulse();
+  },
+  post: (el) => {
+    const it = (pulseState.playbook || [])[Number(el.dataset.i)];
+    if (!it) return;
+    const sources = [...it.evidence.trends.map((t) => t.url), ...(it.evidence.pools || []).map((x) => x.url)].filter(Boolean);
+    return openPost($(`#pd-${el.dataset.i}`).value, sources);
+  },
+  'post-copy': async () => {
+    try { await navigator.clipboard.writeText($('#post-text').value); toast('Copied'); }
+    catch { toast('Could not copy. Select the text and copy it manually.', true); }
+  },
+  'post-go': async (el) => {
+    const comms = state.me.communities;
+    const text = $('#post-text').value.trim();
+    const targets = [...document.querySelectorAll('[data-post-target]')].filter((b) => b.checked).map((b) => {
+      const c = comms.find((x) => x.key === b.dataset.postTarget);
+      const sel = document.querySelector(`[data-post-channel="${c.key}"]`);
+      return { platform: c.platform, communityId: c.id, channelId: sel ? sel.value : undefined, name: c.name, channel: sel ? sel.selectedOptions[0].text : '' };
+    });
+    const xv = $('#post-x').value;
+    let x = null, xNote = '';
+    if (xv !== 'none') {
+      const key = xv === 'intent' ? (targets[0] ? `${targets[0].platform}:${targets[0].communityId}` : comms[0].key) : xv.slice(4);
+      const c = comms.find((q) => q.key === key);
+      x = { mode: xv === 'intent' ? 'intent' : 'api', platform: c.platform, communityId: c.id };
+      xNote = xv === 'intent' ? 'X will open with your text ready for you to post.' : `It will be posted to X as @${postCtx.x[key].account.handle}, which costs about ${/https?:\/\/\S+/i.test(text) ? '$0.20' : '$0.015'}.`;
+    }
+    if (!targets.length && !x) return toast('Choose where to post', true);
+    const where = [...targets.map((t) => `${PLAT[t.platform]} ${t.name}${t.channel ? ` (${t.channel})` : ''}`), x ? 'X' : ''].filter(Boolean).join(', ');
+    if (!(await askConfirm('Post this now?', `It will be posted to: ${where}. ${xNote}`.trim(), 'Post'))) return;
+    el.disabled = true;
+    try {
+      const r = await api('/pulse/post', { method: 'POST', body: { text, approved: true, sources: postCtx.sources, targets: targets.map(({ name, channel, ...t }) => t), x } });
+      $('#drawer-root').innerHTML = modalShell('Done', html`
+        ${r.results.map((q) => html`<div class="row static"><div class="rowmain"><div class="who">${q.label} <span class="tag ${q.ok ? 'ok' : 'bad'}">${q.ok ? 'Posted' : 'Failed'}</span></div>
+          ${q.error && html`<div class="txt" style="color:var(--danger);white-space:normal">${q.error}</div>`}
+          ${q.url && html`<div class="txt"><a href="${safeUrl(q.url)}" target="_blank" rel="noopener noreferrer">View the post on X ↗</a></div>`}</div></div>`)}
+        ${r.xIntentUrl && html`<div class="pad"><a class="btn primary" href="${safeUrl(r.xIntentUrl)}" target="_blank" rel="noopener noreferrer">Open X to finish your post</a>
+          ${r.tweetLength > 280 && html`<div class="muted" style="margin-top:8px">It is ${r.tweetLength} characters, so shorten it on X before you post.</div>`}</div>`}
+        <div class="pbtns"><button class="btn" data-act="close">Close</button></div>`).s;
+    } catch (e) {
+      el.disabled = false;
+      if (e.flags) $('#post-flags').innerHTML = html`<div class="warnbox"><b>Fix before posting</b><ul>${e.flags.map((f) => html`<li><code>${f.phrase}</code>: ${f.why}${f.community ? ` (${f.community})` : ''}</li>`)}</ul></div>`.s;
+      throw e;
+    }
+  },
+  'x-refresh': async (el) => {
+    el.disabled = true; el.textContent = 'Reading X…';
+    try {
+      const r = await api('/pulse/x/refresh', { method: 'POST' });
+      toast(`${r.added} new ${r.added === 1 ? 'post' : 'posts'}${r.failed ? `, ${r.failed} search${r.failed === 1 ? '' : 'es'} failed` : ''}`, r.failed > 0 && r.added === 0);
+    } finally { await reloadPulse(); }
+  },
+  'x-watch-add': async (el) => {
+    const value = $('#xw-value').value.trim();
+    if (!value) return toast('Type an account or a search first', true);
+    await api(`/pulse/sources/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'POST', body: { type: $('#xw-type').value, value } });
+    toast('Added. It is read the next time X is read, or press Read X now.');
+    return reloadPulse();
+  },
+  'x-authorize': async (el) => {
+    el.disabled = true; el.textContent = 'Opening X…';
+    // Open the tab first, while the click still counts, so the browser does not block it. The dashboard stays where it is.
+    const tab = window.open('about:blank', '_blank');
+    try {
+      const r = await api(`/pulse/x/${el.dataset.platform}/${enc(el.dataset.community)}/authorize`, { method: 'POST' });
+      if (tab && !tab.closed) tab.location.href = r.url; else window.location.href = r.url; // pop-ups blocked: fall back to this tab
+    } catch (err) { if (tab && !tab.closed) tab.close(); throw err; }
+    finally { el.disabled = false; el.textContent = 'Connect your X account'; }
+  },
+  'x-connect': async (el) => {
+    const v = (id) => $(id).value.trim();
+    el.disabled = true;
+    try {
+      const r = await api(`/pulse/x/${el.dataset.platform}/${enc(el.dataset.community)}/connect`, { method: 'POST', body: { apiKey: v('#xk-1'), apiSecret: v('#xk-2'), accessToken: v('#xk-3'), accessSecret: v('#xk-4') } });
+      toast(`Connected as @${r.handle}`);
+    } finally { el.disabled = false; }
+    return reloadPulse(); // the form is rebuilt, so the keys do not stay on the page
+  },
+  'x-disconnect': async (el) => {
+    if (!(await askConfirm('Disconnect X?', 'Sentinel will forget these keys and will not be able to post to this account.', 'Disconnect'))) return;
+    await api(`/pulse/x/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'DELETE' });
+    return reloadPulse();
+  },
+  'know-find': async (el) => {
+    const q = $('#kn-find').value.trim();
+    if (q.length < 2) return toast('Type at least two letters', true);
+    el.disabled = true; el.textContent = 'Searching…';
+    try {
+      const hits = await api(`/pulse/defillama/search${qs({ q })}`);
+      $('#know-find-results').innerHTML = html`${hits.length ? hits.map((h) => html`<div class="row static"><div class="rowmain"><div class="who">${h.name} <span class="tag">${h.category || 'Project'}</span></div>
+          <div class="txt">${h.chains.join(', ')}${h.chains.length ? ' · ' : ''}${usd(h.tvl)} locked</div></div>
+          <button class="btn primary" data-pulse="know-llama-add" data-platform="${el.dataset.platform}" data-community="${el.dataset.community}" data-slug="${h.slug}" data-name="${h.name}">Track this</button></div>`)
+        : html`<div class="empty">No project found with that name. Try a shorter name.</div>`}`.s;
+    } finally { el.disabled = false; el.textContent = 'Search'; }
+  },
+  'know-llama-add': (el) => addKnowledge(el, { type: 'defillama', tvlSlug: el.dataset.slug, yieldProject: $('#kn-find-yield')?.checked ? el.dataset.slug : '', title: `DefiLlama: ${el.dataset.name}`, refreshHours: 6 }),
+  'src-del': async (el) => {
+    await api(`/pulse/sources/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'DELETE', body: { type: el.dataset.type, value: el.dataset.value } });
+    return reloadPulse();
+  }
+};
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-pulse]');
+  if (!el || !PULSE_ACTS[el.dataset.pulse]) return;
+  Promise.resolve(PULSE_ACTS[el.dataset.pulse](el, e)).catch(fail);
+});
+
+document.addEventListener('input', (e) => { if (e.target.matches && e.target.matches('[data-pulse-input="post"]')) updatePostCount(); });
+document.addEventListener('change', (e) => { if (e.target.id === 'post-x') updatePostCount(); });
+document.addEventListener('change', async (e) => {
+  const campaign = e.target.closest('[data-campaign-status]');
+  if (campaign) { try { await api(`/pulse/campaigns/${enc(campaign.dataset.campaignStatus)}`, { method: 'PATCH', body: { status: campaign.value } }); toast('Campaign status updated'); } catch (err) { fail(err); } return; }
+  const el = e.target.closest('[data-pulse-change]');
+  if (!el) return;
+  if (el.dataset.pulseChange === 'days') pulseState.days = Number(el.value);
+  if (el.dataset.pulseChange === 'showdone') pulseState.showDone = el.checked;
+  reloadPulse();
+});
+
+// Keeps the Ideas tab fresh without a manual reload. It waits while a panel is
+// open, a field is being typed in, or the tab is in the background.
+setInterval(() => {
+  if (!state.me) return;
+  const r = route();
+  if (r.page !== 'pulse' || (r.sub && r.sub !== 'ideas')) return;
+  if (document.hidden || $('#drawer-root')?.innerHTML.trim()) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  reloadPulse();
+}, 20000);
+
+
+/* =====================================================================
+   Campaign Planner: separate Grow destination, sharing the Pulse context.
+   Uses an in-panel conversation and a Sentinel-styled modal; never browser prompt().
+===================================================================== */
+/* campaign-fix-2: server-synced conversation, three-idea flow, saved-plan actions */
+const campaignPlannerState = { source: 'ai', type: 'Zealy-style quest', community: '', messages: [], saved: [] };
+const CP_STATUS = { idea: 'Draft', planned: 'Planned', review: 'Ready for review', approved: 'Approved', active: 'Running (managed outside Sentinel)', paused: 'Paused', completed: 'Completed' };
+const CP_VERDICT = { fit: ['Likely fit', 'ok'], maybe: ['Maybe', 'net'], no: ['Poor fit', 'bad'] };
+const CP_TYPES_UI = ['Zealy-style quest', 'Quiz', 'Community challenge', 'X thread contest', 'Educational campaign', 'Referral campaign', 'AMA / Space', 'Community poll', 'Web3 trend discussion'];
+function campaignModal({ title, fields, onSave, saveLabel }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div'); overlay.className = 'overlay'; overlay.style.zIndex = '70';
+    const controls = fields.map(f => f.kind === 'textarea'
+      ? html`<label class="fld"><span>${f.label}</span><textarea data-modal-field="${f.name}" rows="3" placeholder="${f.placeholder || ''}">${f.value || ''}</textarea></label>`
+      : html`<label class="fld"><span>${f.label}</span><input data-modal-field="${f.name}" value="${f.value || ''}" placeholder="${f.placeholder || ''}" /></label>`);
+    overlay.innerHTML = html`<aside class="drawer modal" role="dialog" aria-modal="true" aria-label="${title}"><div class="row"><h3>${title}</h3><button class="btn" data-modal-close aria-label="Close">×</button></div><div class="pad">${controls}<div class="pbtns"><button class="btn" data-modal-close>Cancel</button><button class="btn primary" data-modal-save>${saveLabel || 'Save'}</button></div></div></aside>`.s;
+    const finish = (value) => { overlay.remove(); resolve(value); };
+    overlay.addEventListener('click', async e => {
+      if (e.target === overlay || e.target.closest('[data-modal-close]')) return finish(null);
+      if (e.target.closest('[data-modal-save]')) {
+        const value = Object.fromEntries(fields.map(f => [f.name, overlay.querySelector(`[data-modal-field="${f.name}"]`)?.value?.trim() || '']));
+        if (onSave) { const ok = await onSave(value); if (ok === false) return; }
+        finish(value);
+      }
+    });
+    document.addEventListener('keydown', function esc(e) { if (e.key === 'Escape' && overlay.isConnected) { document.removeEventListener('keydown', esc); finish(null); } });
+    document.body.appendChild(overlay); overlay.querySelector('input,textarea')?.focus();
+  });
+}
+
+function cpExtract(text) {
+  const t = String(text || '');
+  const pick = (re) => { const m = t.match(re); return m ? m[1].replace(/[*_`#]/g, '').trim().slice(0, 160) : ''; };
+  const numbered = (t.match(/^\s*\d+[.)]\s+.{4,}$/gm) || []).map((s) => s.replace(/^\s*\d+[.)]\s+/, '').replace(/[*_`]/g, '').trim());
+  return {
+    title: pick(/^\s*\**\s*(?:campaign\s*)?(?:title|name)\s*\**\s*:\s*\**\s*([^\n]+)/im) || pick(/^\s*#{1,4}\s+([^\n]+)/m),
+    goal: pick(/objective[^:\n]*:\s*\**\s*([^\n]+)/i),
+    audience: pick(/audience[^:\n]*:\s*\**\s*([^\n]+)/i),
+    platform: pick(/(?:best\s+)?(?:platform|channel)s?[^:\n]*:\s*\**\s*([^\n]+)/i),
+    reward: pick(/reward[^:\n]*:\s*\**\s*([^\n]+)/i),
+    steps: numbered.slice(0, 8)
+  };
+}
+function cpMeta(meta) {
+  if (!meta) return '';
+  const c = meta.context || {};
+  const origin = meta.mode === 'ai' ? 'AI-generated suggestions' : meta.mode === 'built-in' ? 'Built-in starter template (no AI model configured)' : meta.mode === 'saved' ? 'Saved campaign draft' : '';
+  const ctx = meta.mode === 'saved' ? '' : html`<br>Context used: ${c.briefFilled ? 'project brief ✓' : 'project brief empty'} · ${c.discussions || 0} recent discussions · ${c.knowledge || 0} knowledge notes · ${c.evidence || 0} source items`;
+  const ev = (meta.evidence || []).filter((e) => e && e.url);
+  return html`<div class="muted" style="margin-top:8px;font-size:.8rem">${origin}${ctx}</div>${ev.length ? html`<div class="muted" style="font-size:.8rem;margin-top:6px">Source items (stored feed, not a live scan):<br>${ev.map((e) => html`• <a href="${e.url}" target="_blank" rel="noopener noreferrer">${e.title}</a> ${e.source || ''}<br>`)}</div>` : ''}`;
+}
+function cpIdeaCard(m, i, n) {
+  const [label, cls] = CP_VERDICT[i.verdict] || CP_VERDICT.maybe;
+  const basis = i.source && i.source.url ? html`Observed: <a href="${i.source.url}" target="_blank" rel="noopener noreferrer">${i.source.title}</a>` : html`AI suggestion`;
+  return html`<div style="margin-top:10px;padding:12px;border:1px solid var(--line,#d5dadd);border-radius:12px"><div class="who"><b>${n + 1}. ${i.title}</b> <span class="tag ${cls}">${label}</span></div><div>${i.pitch}</div><div class="muted">Why: ${i.why || '—'}</div><div class="muted">${i.channel ? `${i.channel} · ` : ''}${basis}</div><div class="tools" style="margin-top:8px"><button class="btn primary" data-cp-develop="${m.id}" data-idx="${n}">${i.verdict === 'no' ? 'Develop anyway' : 'Develop this'}</button></div></div>`;
+}
+function cpMessageOld(m) { // campaign-ux: replaced below
+  if (m.role === 'user') return html`<div class="cp-message user"><div class="cp-role">You</div><div class="cp-text">${m.text}</div></div>`;
+  if (m.kind === 'ideas' && Array.isArray(m.ideas)) return html`<div class="cp-message assistant"><div class="cp-role">Campaign Coordinator</div><div class="cp-text">${m.intro || 'Here are three ideas to choose from.'}</div>${m.ideas.map((i, n) => cpIdeaCard(m, i, n))}${cpMeta(m.meta)}</div>`;
+  return html`<div class="cp-message assistant"><div class="cp-role">Campaign Coordinator</div><div class="cp-text">${m.text}</div>${cpMeta(m.meta)}<div class="tools"><button class="btn" data-cp-copy="${m.id}">Copy</button><button class="btn" data-cp-save="${m.id}">Save as campaign</button></div></div>`;
+}
+function cpSavedRowOld(c) {
+  const origin = c.origin === 'ai' ? 'AI-generated' : c.origin === 'built-in' ? 'Starter template' : 'Manual';
+  const src = c.sources && c.sources.length ? ` · ${c.sources.length} source link(s)` : '';
+  return html`<div class="row static"><div class="rowmain"><div class="who">${c.title}</div><div class="txt">${c.type} · ${c.goal || 'No goal set'} · ${origin}${src}</div><div class="tools" style="margin-top:8px"><button class="btn" data-cp-open="${c.id}">Open in chat</button><button class="btn" data-cp-edit="${c.id}">Edit</button><button class="btn" data-cp-delete="${c.id}">Delete</button></div></div><select data-campaign-status="${c.id}">${Object.entries(CP_STATUS).map(([k, v]) => html`<option value="${k}" ${k === c.status ? 'selected' : ''}>${v}</option>`)}</select></div>`;
+}
+// A draft instruction the manager can edit before pressing Ask AI.
+function cpDraft() {
+  const t = campaignPlannerState.type;
+  return { x: `Show me the latest ${t} campaigns active in Web3 right now, and tell me which would fit my community and which would not.`, web3: 'What are the latest things helping Web3 communities grow faster? Which of them would fit my community?', ai: `I need a ${t} campaign for my community.` }[campaignPlannerState.source];
+}
+
+async function cpAskOld({ message = '', example = '', idea = null } = {}) {
+  const community = document.querySelector('#cp-community')?.value || campaignPlannerState.community;
+  campaignPlannerState.community = community;
+  const status = document.querySelector('#cp-status');
+  const locked = [...document.querySelectorAll('#cp-form button, [data-cp-develop]')];
+  if (status) status.textContent = idea ? 'Developing your chosen campaign…' : 'The coordinator is reviewing the community context…';
+  locked.forEach((b) => { b.disabled = true; });
+  try {
+    await api('/pulse/campaign-coordinator', { method: 'POST', body: { community, source: campaignPlannerState.source, type: campaignPlannerState.type, message, example, idea } });
+  } catch (err) {
+    toast(err.message || 'The coordinator could not respond. Please try again.', true);
+    if (status) status.textContent = 'That request failed. Your text is still in the box, so you can try again.';
+    locked.forEach((b) => { b.disabled = false; });
+    return;
+  }
+  await loadCampaignPlanner();
+  const box = document.querySelector('#cp-messages'); if (box) box.scrollTop = box.scrollHeight;
+}
+
+async function loadCampaignPlannerCore() {
+  const communities = state.me.communities || [];
+  if (!communities.length) return setPage(html`<div class="topbar"><h1>Campaign Planner</h1></div>${onboarding(null)}`);
+  if (!campaignPlannerState.community || !communities.some(c => c.key === campaignPlannerState.community)) campaignPlannerState.community = state.scope && state.scope !== 'all' ? state.scope : communities[0].key;
+  const q = qs({ community: campaignPlannerState.community });
+  let saved = [], messages = [];
+  try { saved = await api(`/pulse/campaigns${q}`); } catch { saved = []; }
+  try { messages = (await api(`/pulse/campaign-chat${q}`)).messages || []; } catch { messages = []; }
+  campaignPlannerState.saved = saved; campaignPlannerState.messages = messages;
+  const options = communities.map(c => html`<option value="${c.key}" ${c.key === campaignPlannerState.community ? 'selected' : ''}>${c.name} · ${PLAT[c.platform]}</option>`);
+  const sourceCard = (id, title, desc, glyph) => html`<button class="card campaign-source ${campaignPlannerState.source === id ? 'selected' : ''}" data-cp-source="${id}" type="button"><span class="campaign-glyph">${glyph}</span><b>${title}</b><span class="muted">${desc}</span><span class="campaign-link">${campaignPlannerState.source === id ? 'Selected ✓' : 'Select source →'}</span></button>`;
+  const rendered = messages.map(cpMessage);
+  const srcName = campaignPlannerState.source === 'x' ? 'X Campaigns' : campaignPlannerState.source === 'web3' ? 'Web3 Sources' : 'Ask AI';
+  setPage(html`<div class="topbar"><div><h1>Campaign Planner</h1><div class="muted">Pick a source and a campaign type. Sentinel brainstorms with you using what it knows about this community.</div></div><div class="tools"><label class="fld"><span>Community</span><select id="cp-community">${options}</select></label></div></div>
+    <div class="campaign-intro"><h2>Campaign Intelligence</h2><p class="muted">Choose how to brainstorm, then a campaign type. You get three ideas to pick from before any full plan is written.</p>
+      <div class="campaign-source-grid">${sourceCard('x', 'X Campaigns', 'What campaigns are active in Web3 right now, and which would fit your community.', '𝕏')}${sourceCard('web3', 'Web3 Sources', 'The latest things helping Web3 communities grow faster, judged against yours.', '◎')}${sourceCard('ai', 'Ask AI', 'Ideas built from your project brief and recent community discussions.', '✧')}</div>
+      <h3>Campaign discovery categories</h3><div class="campaign-categories">${CP_TYPES_UI.map(t => html`<button class="chip ${campaignPlannerState.type === t ? 'active' : ''}" data-cp-type="${t}">${t}</button>`)}</div>
+    </div>
+    <div class="panel campaign-chat-panel"><div class="panelhead"><h2>Campaign Coordinator <span>Community-aware planning and drafting</span></h2><button class="btn" data-cp-clear>New conversation</button></div>
+      <div class="pad"><div class="cp-context"><span class="tag">Source: ${srcName}</span><span class="tag">Type: ${campaignPlannerState.type}</span><span class="tag">${communities.find(c => c.key === campaignPlannerState.community)?.name || 'Community'}</span></div>
+      <div class="cp-messages" id="cp-messages">${rendered.length ? rendered : html`<div class="empty"><b>What campaign should we explore?</b><br>Pick a source and a type, then press Ask AI (or write your own instruction). You will get three ideas to choose from.</div>`}</div>
+      <form id="cp-form" class="cp-composer"><label class="fld"><span>Message the coordinator</span><textarea id="cp-message" rows="3" placeholder="e.g. I need a Zealy-style quest for my community. Leave empty to use the selected source's default question."></textarea></label><label class="fld"><span>Optional X post, campaign link or example to adapt</span><textarea id="cp-example" rows="2" placeholder="Paste the text or URL here. Sentinel will not claim to have scanned X unless stored results are available."></textarea></label><div class="tools"><button class="btn" type="button" data-cp-explore>Draft instruction</button><button class="btn primary" type="submit">Ask AI</button></div><div class="muted" id="cp-status">Sentinel knows this community from its project brief, recent discussions and knowledge notes. X and Web3 read the stories Sentinel has stored from your feeds, not a live scan. Your conversation syncs across your devices.</div></form></div></div>
+    <div class="panel"><div class="panelhead"><h2>Saved campaigns <span>${saved.length} saved</span></h2></div><div class="pad">${saved.length ? saved.map(cpSavedRow) : html`<div class="muted">Your saved campaign plans will appear here.</div>`}</div></div>`);
+}
+
+// Event delegation is shared with the dashboard's existing handlers.
+document.addEventListener('click', async e => {
+  const source = e.target.closest('[data-cp-source]');
+  if (source) { campaignPlannerState.source = source.dataset.cpSource; return loadCampaignPlanner(); }
+  const type = e.target.closest('[data-cp-type]');
+  if (type) { campaignPlannerState.type = type.dataset.cpType; return loadCampaignPlanner(); }
+  if (e.target.closest('[data-cp-clear]')) {
+    try { await api(`/pulse/campaign-chat${qs({ community: campaignPlannerState.community })}`, { method: 'DELETE' }); } catch (err) { return fail(err); }
+    return loadCampaignPlanner();
+  }
+  if (e.target.closest('[data-cp-explore]')) {
+    const input = document.querySelector('#cp-message');
+    if (input && !input.value.trim()) input.value = cpDraft();
+    input?.focus(); return;
+  }
+  const dev = e.target.closest('[data-cp-develop]');
+  if (dev) {
+    const m = campaignPlannerState.messages.find(x => x.id === dev.dataset.cpDevelop);
+    const idea = m?.ideas?.[Number(dev.dataset.idx)]; if (!idea) return;
+    return cpAsk({ idea });
+  }
+  const copy = e.target.closest('[data-cp-copy]');
+  if (copy) { const m = campaignPlannerState.messages.find(x => x.id === copy.dataset.cpCopy); if (m) { await navigator.clipboard.writeText(m.text); toast('Copied to clipboard'); } return; }
+  const save = e.target.closest('[data-cp-save]');
+  if (save) {
+    const m = campaignPlannerState.messages.find(x => x.id === save.dataset.cpSave); if (!m) return;
+    const x = cpExtract(m.text);
+    const comm = (state.me.communities || []).find((c) => c.key === campaignPlannerState.community);
+    const fields = await campaignModal({ title: 'Save campaign idea', fields: [
+      { name: 'title', label: 'Campaign name', value: x.title || campaignPlannerState.type },
+      { name: 'goal', label: 'Goal', value: x.goal },
+      { name: 'audience', label: 'Target audience', value: x.audience },
+      { name: 'platform', label: 'Platforms / channels', value: x.platform || (comm ? PLAT[comm.platform] : '') },
+      { name: 'reward', label: 'Optional reward', value: x.reward }
+    ] });
+    if (!fields?.title) return;
+    try {
+      const origin = m.meta?.mode === 'ai' ? 'ai' : m.meta?.mode === 'built-in' ? 'built-in' : 'manual';
+      await api('/pulse/campaigns', { method: 'POST', body: { community: campaignPlannerState.community, title: fields.title, type: campaignPlannerState.type, goal: fields.goal, audience: fields.audience, platform: fields.platform, reward: fields.reward, draft: m.text, steps: x.steps, sources: m.meta?.evidence || [], origin, via: m.meta?.source || '' });
+      toast('Saved as a draft. Nothing has been published.'); await loadCampaignPlanner();
+    } catch (err) { fail(err); }
+    return;
+  }
+  const btn = e.target.closest('[data-cp-open],[data-cp-edit],[data-cp-delete]'); if (!btn) return;
+  const id = btn.dataset.cpOpen || btn.dataset.cpEdit || btn.dataset.cpDelete;
+  const c = campaignPlannerState.saved.find((s) => s.id === id); if (!c) return;
+  try {
+    if (btn.dataset.cpOpen) {
+      await api('/pulse/campaign-chat/open', { method: 'POST', body: { community: campaignPlannerState.community, id } });
+      await loadCampaignPlanner(); const box = document.querySelector('#cp-messages'); if (box) box.scrollTop = box.scrollHeight; return;
+    }
+    if (btn.dataset.cpDelete) {
+      const ok = await campaignModal({ title: `Delete "${c.title}"? This cannot be undone.`, fields: [], saveLabel: 'Delete' }); if (!ok) return;
+      await api(`/pulse/campaigns/${enc(id)}`, { method: 'DELETE' }); toast('Campaign deleted'); return loadCampaignPlanner();
+    }
+    const f = await campaignModal({ title: 'Edit campaign', fields: [
+      { name: 'title', label: 'Campaign name', value: c.title }, { name: 'goal', label: 'Goal', value: c.goal },
+      { name: 'audience', label: 'Target audience', value: c.audience }, { name: 'platform', label: 'Platforms / channels', value: c.platform },
+      { name: 'reward', label: 'Optional reward', value: c.reward }, { name: 'draft', label: 'Draft content', kind: 'textarea', value: c.draft }
+    ] });
+    if (!f?.title) return;
+    await api(`/pulse/campaigns/${enc(id)}`, { method: 'PATCH', body: f }); toast('Campaign updated'); return loadCampaignPlanner();
+  } catch (err) { fail(err); }
+});
+document.addEventListener('change', async e => {
+  if (e.target.id !== 'cp-community') return;
+  campaignPlannerState.community = e.target.value;
+  await loadCampaignPlanner();
+});
+document.addEventListener('submit', async e => {
+  if (e.target.id !== 'cp-form') return;
+  e.preventDefault();
+  await cpAsk({ message: document.querySelector('#cp-message')?.value.trim() || '', example: document.querySelector('#cp-example')?.value.trim() || '' });
+});
+// The X tab tells this tab when it is finished (same site, so this works even after X was in between).
+try {
+  new BroadcastChannel('sentinel-x').onmessage = (e) => {
+    if (e.data?.type !== 'x-connected') return;
+    toast('X account connected.');
+    reloadPulse();
+  };
+} catch { /* very old browser: the Setup page shows the account after a reload */ }
+
+/* pool-finder: Suggested pools panel, with a liquidity filter the manager can change. */
+const POOL_MINS = [[1000, 'Over $1K (recommended)'], [0, 'Show all, including tiny pools'], [100, 'Over $100'], [10000, 'Over $10K'], [100000, 'Over $100K']];
+const suggState = { key: '', data: null, min: 1000, error: '' };
+try {
+  const saved = localStorage.getItem('pulse.poolMin');
+  if (saved !== null && POOL_MINS.some(([v]) => v === Number(saved))) suggState.min = Number(saved);
+} catch { /* browser storage may be unavailable; the default is used */ }
+
+function poolFinderPanel(d) {
+  const comms = state.me.communities;
+  const scoped = comms.find((c) => c.key === state.scope);
+  const pick = scoped ? scoped.key : suggState.key;
+  const chainName = (c) => d.chains[c] || c;
+  const have = suggState.data && suggState.key === pick ? suggState.data : null;
+  const watched = new Set(d.items.filter((p) => p.communityKey === pick).map((p) => `${p.chain}:${String(p.address).toLowerCase()}`));
+  const all = have ? have.suggestions.filter((s) => !watched.has(`${s.chain}:${String(s.address).toLowerCase()}`)) : [];
+  const shown = all.filter((s) => (s.tvlUsd == null ? suggState.min === 0 : s.tvlUsd >= suggState.min));
+  const hidden = all.length - shown.length;
+  const [plat, ...rest] = String(pick).split(':');
+  const row = (s) => html`<div class="row static"><div class="rowmain">
+      <div class="who">${s.label} ${String(s.dex).toLowerCase() !== String(chainName(s.chain)).toLowerCase() && html`<span class="tag">${s.dex}</span> `}<span class="tag">${chainName(s.chain)}</span></div>
+      <div class="poolstats"><div><span>Liquidity</span><b>${usd(s.tvlUsd)}</b></div></div>
+      <div class="pmeta">Holds ${s.tokens.join(', ')} · <a href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">Open source page ↗</a></div></div>
+    <div class="actions"><button class="btn primary" data-pulse="sugg-add" data-platform="${plat}" data-community="${rest.join(':')}" data-input="${s.addInput}">Add</button></div></div>`;
+  return html`<div class="panel"><h2>Suggested pools <span>found from your project details</span></h2><div class="pad">
+    <div class="muted" style="margin-bottom:12px">Pulse reads your project brief (name and ticker) and any token addresses in it or in your uploaded documents, then lists pools that hold your tokens. Nothing is added until you click Add. Check each pool is really yours, because anyone can create a pool with a similar name.</div>
+    ${scoped
+      ? html`<input type="hidden" id="sugg-community" value="${scoped.key}">`
+      : html`<label class="fld"><span>Community</span><select id="sugg-community"><option value="">Choose a community…</option>${comms.map((c) => html`<option value="${c.key}" ${c.key === suggState.key ? 'selected' : ''}>${CODE[c.platform]} · ${c.name}</option>`)}</select></label>`}
+    <label class="fld"><span>Show pools with</span><select data-sugg-min>${POOL_MINS.map(([v, l]) => html`<option value="${v}" ${v === suggState.min ? 'selected' : ''}>${l}</option>`)}</select></label>
+    <button class="btn primary" data-pulse="sugg-find">Find pools</button>
+    ${suggState.error && html`<div class="txt" style="color:var(--danger);white-space:normal;margin-top:10px">${suggState.error}</div>`}
+    ${have && html`<div style="margin-top:12px">
+      ${have.matched.length > 0 && html`<div class="txt" style="white-space:normal;margin-bottom:8px">Tokens matched on Osmosis: ${have.matched.map((t) => t.symbol).join(', ')}. Check these are yours.</div>`}
+      ${have.notes.map((n) => html`<div class="txt" style="white-space:normal;margin-bottom:8px">${n}</div>`)}
+      ${shown.length ? shown.map(row) : (all.length ? html`<div class="empty"><b>No pools above this liquidity</b><br>Change "Show pools with" to see the smaller ones.</div>` : have.suggestions.length ? html`<div class="empty"><b>Everything found is already being watched</b></div>` : false)}
+      ${hidden > 0 && shown.length > 0 && html`<div class="muted" style="margin-top:8px">${hidden} smaller ${hidden === 1 ? 'pool is' : 'pools are'} hidden. Change "Show pools with" to see ${hidden === 1 ? 'it' : 'them'}.</div>`}</div>`}
+  </div></div>`;
+}
+
+Object.assign(PULSE_ACTS, {
+  'sugg-find': async (el) => {
+    const key = $('#sugg-community')?.value;
+    if (!key || !state.me.communities.some((c) => c.key === key)) return toast('Choose a community first', true);
+    const [platform, ...rest] = key.split(':');
+    el.disabled = true; el.textContent = 'Looking…';
+    suggState.key = key; suggState.error = ''; suggState.data = null;
+    try {
+      const r = await api(`/pulse/pools/suggest/${platform}/${enc(rest.join(':'))}`);
+      if (r.ok === false) suggState.error = r.error; else suggState.data = r;
+    } catch (e) { suggState.error = e.message || 'Could not look for pools. Try again.'; }
+    finally { await reloadPulse(); }
+  },
+  'sugg-add': async (el) => {
+    el.disabled = true; el.textContent = 'Adding…';
+    try {
+      const r = await api(`/pulse/pools/${el.dataset.platform}/${enc(el.dataset.community)}`, { method: 'POST', body: { mode: 'pool', input: el.dataset.input, chain: '' } });
+      if (r.result.ok) toast('Added. Pulse will tell you when it changes.');
+      else toast(`Added, but it could not be read yet: ${r.result.error}`, true);
+    } finally { await reloadPulse(); }
+  }
+});
+
+document.addEventListener('change', (e) => {
+  const el = e.target.closest ? e.target.closest('[data-sugg-min]') : null;
+  if (!el) return;
+  suggState.min = Number(el.value);
+  try { localStorage.setItem('pulse.poolMin', String(suggState.min)); } catch { /* optional */ }
+  reloadPulse();
+});
+
+/* campaign-ux: who brainstormed, fold and unfold, jump to the new idea, start over, and what each source has stored. */
+const CP_SRC = {
+  x: { name: 'X Campaigns', short: 'X', glyph: '𝕏', ask: 'Ask X' },
+  web3: { name: 'Web3 Sources', short: 'Web', glyph: '◎', ask: 'Ask Web Sources' },
+  ai: { name: 'Ask AI', short: 'AI', glyph: '✧', ask: 'Ask AI' }
+};
+Object.assign(campaignPlannerState, { open: new Set(), seen: new Set(), openFor: '', focusId: '' });
+
+const cpBadge = (src, prefix = '') => (CP_SRC[src] ? html`<span class="cp-badge cp-src-${src}">${CP_SRC[src].glyph} ${prefix}${CP_SRC[src].name}</span>` : '');
+
+function cpSummary(m) {
+  const cut = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+  if (m.kind === 'ideas' && Array.isArray(m.ideas)) return `${m.ideas.length} ideas: ${cut(m.ideas.map((i) => i.title).join(' · '), 130)}`;
+  if (m.kind === 'plan') return `Plan: ${cut(cpExtract(m.text).title || m.text, 110)}`;
+  return `${m.kind === 'chat' ? 'Reply' : 'Note'}: ${cut(m.text, 120)}`;
+}
+
+// New answers open by themselves. The first time a community is shown, only the newest answer is open.
+function cpSyncOpen(list) {
+  const st = campaignPlannerState;
+  if (st.openFor !== st.community) {
+    st.openFor = st.community; st.seen = new Set(list.map((m) => m.id));
+    const last = [...list].reverse().find((m) => m.role === 'assistant');
+    st.open = new Set(last ? [last.id] : []);
+    return;
+  }
+  for (const m of list) if (!st.seen.has(m.id)) { st.seen.add(m.id); if (m.role === 'assistant') st.open.add(m.id); }
+}
+
+function cpMessage(m, i) {
+  if (i === 0) cpSyncOpen(campaignPlannerState.messages);
+  if (m.role === 'user') return html`<div class="cp-message user" data-cp-msg="${m.id}"><div class="cp-role">You ${m.via ? cpBadge(m.via, 'asked ') : ''}</div><div class="cp-text">${m.text}</div></div>`;
+  const src = CP_SRC[m.meta?.source] ? m.meta.source : 'none';
+  const open = campaignPlannerState.open.has(m.id);
+  const stored = m.meta?.context?.evidence || 0;
+  const warn = m.meta?.mode === 'ai' && (src === 'x' || src === 'web3') && !stored && m.kind !== 'chat'
+    ? html`<div class="cp-warn">No stored ${src === 'x' ? 'X posts' : 'feed stories'} were available, so this came from the AI, not from ${src === 'x' ? 'X' : 'the web'}.</div>` : '';
+  const fresh = m.meta?.refreshed ? html`<div class="muted" style="font-size:.8rem;margin-top:6px">Your feeds were re-read just before this answer.</div>` : '';
+  const body = m.kind === 'ideas' && Array.isArray(m.ideas)
+    ? html`<div class="cp-text">${m.intro || 'Here are three ideas to choose from.'}</div>${m.ideas.map((x, n) => cpIdeaCard(m, x, n))}${warn}${cpMeta(m.meta)}${fresh}`
+    : html`<div class="cp-text">${m.text}</div>${warn}${cpMeta(m.meta)}${fresh}<div class="tools"><button class="btn" data-cp-copy="${m.id}">Copy</button><button class="btn" data-cp-save="${m.id}">Save as campaign</button></div>`;
+  const badge = cpBadge(m.meta?.source) || html`<span class="cp-badge">${m.meta?.mode === 'saved' ? 'Saved draft' : 'Coordinator'}</span>`;
+  return html`<div class="cp-message assistant cp-src-${src} ${open ? '' : 'folded'}" data-cp-msg="${m.id}"><button type="button" class="cp-fold" data-cp-fold="${m.id}" aria-expanded="${open ? 'true' : 'false'}">${badge}<span class="cp-sum">${cpSummary(m)}</span><span class="cp-when">${m.at ? ago(m.at) : ''}</span><span class="cp-chev">${open ? 'Close' : 'Open'}</span></button><div class="cp-body">${body}</div></div>`;
+}
+
+function cpSavedRow(c) {
+  const origin = c.origin === 'ai' ? 'AI-generated' : c.origin === 'built-in' ? 'Starter template' : 'Manual';
+  const src = c.sources && c.sources.length ? ` · ${c.sources.length} source link(s)` : '';
+  return html`<div class="row static"><div class="rowmain"><div class="who">${c.title} ${cpBadge(c.via)}</div><div class="txt">${c.type} · ${c.goal || 'No goal set'} · ${origin}${src}</div><div class="tools" style="margin-top:8px"><button class="btn" data-cp-open="${c.id}">Open in chat</button><button class="btn" data-cp-edit="${c.id}">Edit</button><button class="btn" data-cp-delete="${c.id}">Delete</button></div></div><select data-campaign-status="${c.id}">${Object.entries(CP_STATUS).map(([k, v]) => html`<option value="${k}" ${k === c.status ? 'selected' : ''}>${v}</option>`)}</select></div>`;
+}
+
+// Once a plan exists: refine it, or start over. Changing source or type means the manager wants a fresh brainstorm.
+function cpIntentDefault(messages, source, type) {
+  if (!messages.some((m) => m.role === 'assistant' && (m.kind === 'plan' || m.kind === 'chat'))) return null;
+  const last = [...messages].reverse().find((m) => m.role === 'assistant' && m.meta && m.meta.mode !== 'saved');
+  const changed = last && ((last.meta.source && last.meta.source !== source) || (last.meta.type && last.meta.type !== type));
+  return changed ? 'ideas' : 'chat';
+}
+
+function cpStatText(src, s) {
+  if (!s) return '';
+  if (src === 'ai') return `${s.discussions} recent discussions read${s.briefFilled ? ' plus your project brief.' : '. Your project brief is empty, so ideas will be generic.'}`;
+  if (!s.count) return src === 'x' ? 'No X posts stored for this community yet. Ideas would be AI-suggested, not taken from X.' : 'No feed stories stored yet. Asking reads your feeds first.';
+  return `${s.count} stored ${src === 'x' ? 'X post' : 'feed stor'}${src === 'x' ? (s.count === 1 ? '' : 's') : (s.count === 1 ? 'y' : 'ies')}, newest ${s.newest ? ago(s.newest) : 'time unknown'}.${src === 'web3' ? ' Feeds are re-read before an ask when older than 3 hours.' : ' This is not a live X search.'}`;
+}
+
+function cpMountIntent() {
+  const st = campaignPlannerState;
+  const form = document.querySelector('#cp-form');
+  if (!form || form.querySelector('#cp-intent')) return;
+  const def = cpIntentDefault(st.messages, st.source, st.type);
+  if (!def) return;
+  const wrap = document.createElement('label');
+  wrap.className = 'fld';
+  wrap.innerHTML = `<span>What should this ask do?</span><select id="cp-intent"><option value="chat">Refine the plan above</option><option value="ideas">Start over: 3 new ideas from ${CP_SRC[st.source].name} (${st.type})</option></select>`;
+  wrap.querySelector('select').value = def;
+  form.insertBefore(wrap, form.querySelector('.tools'));
+}
+
+// After an ask, take the manager to the start of the new answer.
+function cpFocusNew() {
+  const st = campaignPlannerState;
+  const id = st.focusId; st.focusId = '';
+  if (!id) return;
+  const el = document.querySelector(`[data-cp-msg="${window.CSS && CSS.escape ? CSS.escape(id) : id}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.classList.add('cp-flash');
+  setTimeout(() => el.classList.remove('cp-flash'), 2600);
+}
+
+async function cpFillSourceStatus() {
+  const st = campaignPlannerState;
+  const community = st.community;
+  let s;
+  try { s = await api(`/pulse/campaign-sources${qs({ community })}`); } catch { return; }
+  if (community !== st.community) return;
+  for (const src of Object.keys(CP_SRC)) {
+    const card = document.querySelector(`[data-cp-source="${src}"]`);
+    if (!card) continue;
+    let line = card.querySelector('.cp-srcstat');
+    if (!line) { line = document.createElement('span'); line.className = 'cp-srcstat'; card.insertBefore(line, card.querySelector('.campaign-link')); }
+    line.textContent = cpStatText(src, s[src]);
+  }
+  const status = document.querySelector('#cp-status');
+  if (status && s[st.source] && !document.querySelector('#cp-form button:disabled')) status.textContent = `${CP_SRC[st.source].name}: ${cpStatText(st.source, s[st.source])}`;
+}
+
+async function loadCampaignPlanner(keepText = true) {
+  const st = campaignPlannerState;
+  const keep = keepText ? { m: document.querySelector('#cp-message')?.value || '', e: document.querySelector('#cp-example')?.value || '' } : { m: '', e: '' };
+  await loadCampaignPlannerCore();
+  const m = document.querySelector('#cp-message'), ex = document.querySelector('#cp-example');
+  if (m && keep.m) m.value = keep.m; // switching source or type used to wipe what was typed
+  if (ex && keep.e) ex.value = keep.e;
+  const ask = document.querySelector('#cp-form button[type="submit"]');
+  if (ask && CP_SRC[st.source]) ask.textContent = CP_SRC[st.source].ask;
+  cpMountIntent();
+  cpFocusNew();
+  cpFillSourceStatus(); // not waited for: the page is usable straight away
+}
+
+async function cpAsk({ message = '', example = '', idea = null } = {}) {
+  const st = campaignPlannerState;
+  const community = document.querySelector('#cp-community')?.value || st.community;
+  st.community = community;
+  // A developed plan keeps the brainstormer its idea came from, even if the source was switched since.
+  const from = idea ? st.messages.find((x) => Array.isArray(x.ideas) && x.ideas.includes(idea)) : null;
+  const source = CP_SRC[from?.meta?.source] ? from.meta.source : st.source;
+  const type = idea && CP_TYPES_UI.includes(from?.meta?.type) ? from.meta.type : st.type;
+  const intent = idea ? '' : (document.querySelector('#cp-intent')?.value || '');
+  const status = document.querySelector('#cp-status');
+  const locked = [...document.querySelectorAll('#cp-form button, [data-cp-develop]')];
+  if (status) status.textContent = idea ? `Developing your ${CP_SRC[source].short} idea…` : `Asking ${CP_SRC[source].name}…${source === 'web3' ? ' (reading your feeds first if they are stale)' : ''}`;
+  locked.forEach((b) => { b.disabled = true; });
+  let r;
+  try {
+    r = await api('/pulse/campaign-coordinator', { method: 'POST', body: { community, source, type, message, example, idea, intent } });
+  } catch (err) {
+    toast(err.message || 'The coordinator could not respond. Please try again.', true);
+    if (status) status.textContent = 'That request failed. Your text is still in the box, so you can try again.';
+    locked.forEach((b) => { b.disabled = false; });
+    return;
+  }
+  const newest = (r.messages || []).filter((x) => x.role === 'assistant').pop();
+  st.focusId = newest ? newest.id : '';
+  await loadCampaignPlanner(false);
+}
+
+document.addEventListener('click', (e) => {
+  const fold = e.target.closest('[data-cp-fold]');
+  if (fold) {
+    const st = campaignPlannerState, id = fold.dataset.cpFold;
+    const open = !st.open.has(id);
+    if (open) st.open.add(id); else st.open.delete(id);
+    const wrap = fold.closest('.cp-message');
+    if (wrap) wrap.classList.toggle('folded', !open);
+    fold.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const chev = fold.querySelector('.cp-chev');
+    if (chev) chev.textContent = open ? 'Close' : 'Open';
+    return;
+  }
+  // The "Draft instruction" text asks for a fresh brainstorm, so the ask should start over too.
+  if (e.target.closest('[data-cp-explore]')) { const sel = document.querySelector('#cp-intent'); if (sel) sel.value = 'ideas'; }
+});

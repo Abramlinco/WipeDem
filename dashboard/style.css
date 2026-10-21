@@ -483,3 +483,28 @@ h4{margin:20px 0 8px; font-size:12.5px; font-weight:600; color:var(--sub);}
   .nf-panel{left:12px; width:auto; max-height:calc(100vh - 190px);}
   .nf-bell{width:42px; height:42px;}
 }
+
+
+/* campaign-ux: who brainstormed, fold and unfold, and the jump to a new answer. */
+:root{--cp-x:#44535b;--cp-web:#2f6fdd;--cp-ai:var(--accent,#0c727c)}
+:root[data-theme="dark"]{--cp-x:#c4d0d6;--cp-web:#6ea2ff}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--cp-x:#c4d0d6;--cp-web:#6ea2ff}}
+.cp-src-x{--cp-c:var(--cp-x)}.cp-src-web3{--cp-c:var(--cp-web)}.cp-src-ai{--cp-c:var(--cp-ai)}
+.campaign-source[data-cp-source="x"]{--cp-c:var(--cp-x)}.campaign-source[data-cp-source="web3"]{--cp-c:var(--cp-web)}.campaign-source[data-cp-source="ai"]{--cp-c:var(--cp-ai)}
+.campaign-source[data-cp-source]{box-shadow:inset 0 3px 0 var(--cp-c)}
+.campaign-source.selected[data-cp-source]{border-color:var(--cp-c);box-shadow:inset 0 3px 0 var(--cp-c),0 0 0 1px var(--cp-c)}
+.cp-srcstat{font-size:.82rem;line-height:1.4;opacity:.85;font-weight:400}
+.cp-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:.76rem;font-weight:700;line-height:1.5;white-space:nowrap;color:var(--cp-c,inherit);background:color-mix(in srgb,var(--cp-c,#888) 14%,transparent);border:1px solid color-mix(in srgb,var(--cp-c,#888) 45%,transparent)}
+.cp-role{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.cp-message.assistant{width:94%;border-left:4px solid var(--cp-c,var(--line,#d5dadd))}
+.cp-fold{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:10px;width:100%;cursor:pointer;white-space:normal}
+.cp-fold:focus-visible{outline:2px solid var(--accent,#0c727c);outline-offset:3px;border-radius:6px}
+.cp-sum{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cp-when{font-size:.75rem;opacity:.65;white-space:nowrap}
+.cp-chev{font-size:.78rem;font-weight:700;color:var(--accent,#0c727c);white-space:nowrap}
+.cp-body{margin-top:12px;padding-top:12px;border-top:1px solid var(--line,#d5dadd)}
+.cp-message.folded{padding:10px 14px}.cp-message.folded .cp-body{display:none}
+.cp-warn{margin-top:10px;padding:8px 10px;border-radius:8px;font-size:.85rem;white-space:normal;background:var(--warn-soft,rgba(227,160,43,.14))}
+@keyframes cp-flash{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--cp-c,var(--accent,#0c727c)) 55%,transparent)}100%{box-shadow:0 0 0 12px transparent}}
+.cp-flash{animation:cp-flash 1.2s ease-out 2}
+@media(max-width:760px){.cp-message.assistant{width:100%}.cp-when{display:none}}
