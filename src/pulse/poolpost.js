@@ -40,7 +40,7 @@ export function poolFacts(item, now = Date.now()) {
 function build(f, brief) {
   const name = f.label;
   const on = f.dex && f.dex.toLowerCase() !== f.chain.toLowerCase() ? `${f.dex}, ${f.chain}` : (f.chain || f.dex);
-  const at = on ? ` (${on})` : '';
+  const at = on && !on.split(', ').every((p) => name.toLowerCase().includes(p.toLowerCase())) ? ` (${on})` : ''; // post-wording: skip the tag when the name already says it
   const chg = f.change != null && Math.abs(f.change) >= 0.05 ? `${f.change > 0 ? 'up' : 'down'} about ${Math.round(Math.abs(f.change) * 100)}% ${f.since}` : '';
   const liq = f.tvl == null ? '' : f.kind === 'token'
     ? `${f.pairCount ?? 'Several'} pools hold about ${usd(f.tvl)} in liquidity in total${chg ? `, ${chg}` : ''}`
@@ -54,7 +54,7 @@ function build(f, brief) {
   const dot = (s) => (s ? `${s}.` : '');
   return [
     j(`Pool update: ${name}${at}.`, dot(liq), vol, link ? `Details: ${link}` : ''),
-    j(`${hello} A quick look at ${f.kind === 'token' ? name : `the ${name} pool`}${at}.`, dot(liq ? `${liq}${asOf}` : ''), apy, link ? `Have a look: ${link}` : ''),
+    j(`${hello} A quick look at ${f.kind === 'token' ? name : (/pool/i.test(name) ? `the ${name}` : `the ${name} pool`)}${at}.`, dot(liq ? `${liq}${asOf}` : ''), apy, link ? `Have a look: ${link}` : ''),
     j(`${name}${at}:`, liq ? `${liq.replace(/^Liquidity is about /, '~').replace(/ in liquidity in total/, ' total')}.` : '', link),
     j(`Are you providing liquidity or trading in ${name}${at}?`, dot(liq), vol, 'Tell us how it is going in the replies!', link),
     apy ? j(`Yield check: ${name}${at}.`, apy, dot(liq), link) : j(`By the numbers: ${name}${at}.`, dot(liq), vol, link)

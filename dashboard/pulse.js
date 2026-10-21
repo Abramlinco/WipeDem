@@ -933,7 +933,7 @@ document.addEventListener('click', async e => {
     if (!fields?.title) return;
     try {
       const origin = m.meta?.mode === 'ai' ? 'ai' : m.meta?.mode === 'built-in' ? 'built-in' : 'manual';
-      await api('/pulse/campaigns', { method: 'POST', body: { community: campaignPlannerState.community, title: fields.title, type: campaignPlannerState.type, goal: fields.goal, audience: fields.audience, platform: fields.platform, reward: fields.reward, draft: m.text, steps: x.steps, sources: m.meta?.evidence || [], origin, via: m.meta?.source || '' });
+      await api('/pulse/campaigns', { method: 'POST', body: { community: campaignPlannerState.community, title: fields.title, type: campaignPlannerState.type, goal: fields.goal, audience: fields.audience, platform: fields.platform, reward: fields.reward, draft: m.text, steps: x.steps, sources: m.meta?.evidence || [], origin, via: m.meta?.source || '' } });
       toast('Saved as a draft. Nothing has been published.'); await loadCampaignPlanner();
     } catch (err) { fail(err); }
     return;
