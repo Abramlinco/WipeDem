@@ -37,6 +37,9 @@ export function startDiscordBot() {
     ]
   });
 
+  client.on('error', (err) => console.error('[discord] client error', err?.message || err));
+  client.on('shardError', (err) => console.error('[discord] connection error', err?.message || err));
+
   const register = (g) => upsertCommunity({ platform: 'discord', id: g.id, name: g.name });
 
   client.once('ready', () => {
@@ -278,7 +281,8 @@ export async function getGuildRoles(guildId) {
 export async function banDiscordUser(guildId, userId) {
   const guild = client?.guilds.cache.get(guildId);
   if (!guild) return false;
-  await guild.members.ban(userId, { reason: 'Sentinel: confirmed impersonation or scam' }).catch(() => {});
+  try { await guild.members.ban(userId, { reason: 'Sentinel: confirmed impersonation or scam' }); }
+  catch (err) { console.error('[discord] ban failed', err?.message || err); return false; }
   return true;
 }
 
@@ -286,9 +290,11 @@ export async function releaseDiscordUser(guildId, userId) {
   const guild = client?.guilds.cache.get(guildId);
   if (!guild) return false;
   const member = await guild.members.fetch(userId).catch(() => null);
-  if (member) await member.timeout(null).catch(() => {});
-  await guild.bans.remove(userId).catch(() => {});
-  return true;
+  let ok = true;
+  if (member) await member.timeout(null).catch((err) => { ok = false; console.error('[discord] could not lift the timeout', err?.message || err); });
+  // 10026 = this person was not banned, which is fine when releasing someone who was only muted.
+  await guild.bans.remove(userId).catch((err) => { if (err?.code !== 10026) { ok = false; console.error('[discord] could not unban', err?.message || err); } });
+  return ok;
 }
 
 export async function cautionDiscordUser(channelId, { userId }, text) {

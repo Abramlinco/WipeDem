@@ -5,11 +5,16 @@ import { getSessionRecord, saveSessionRecord, deleteSessionRecord } from '../db.
 export const COOKIE = 'sentinel_sid';
 const WEEK = 7 * 24 * 3600;
 
+// A cookie some other app set on localhost can hold a broken % sequence. That must never take the dashboard down.
+function safeDecode(v) {
+  try { return decodeURIComponent(v); } catch { return v; }
+}
+
 export function parseCookies(header = '') {
   const out = {};
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i > 0) out[part.slice(0, i).trim()] = safeDecode(part.slice(i + 1).trim());
   }
   return out;
 }
@@ -62,3 +67,5 @@ export function requireLogin(req, res, next) {
   if (!req.session) return res.status(401).json({ error: 'login_required' });
   next();
 }
+// A short one way label for "who did this" in stored records. Never the start of a real session ID.
+export const sessionTag = (session) => crypto.createHash('sha256').update(String(session?.id || '')).digest('hex').slice(0, 8);

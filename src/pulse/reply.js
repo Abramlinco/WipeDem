@@ -3,6 +3,7 @@ import { rankTrends } from './strategist.js';
 import { extractTopics, analyze } from './analyze.js';
 import { retrieve, bestSentences } from './knowledge.js';
 import { unsupportedFigures } from './faqlogic.js';
+import { findLinks } from '../detection/detect.js';
 
 // Turns a member's message into a reply a community manager can approve.
 // Nothing here posts anything. It only returns text, the sources behind it,
@@ -69,7 +70,7 @@ const BUILT_IN = [
 ];
 
 const URL_RE = /https?:\/\/[^\s<>)\]"]+/gi;
-const urlKey = (u) => { try { const p = new URL(u); return `${p.hostname.replace(/^www\./, '')}${p.pathname.replace(/\/+$/, '')}`.toLowerCase(); } catch { return ''; } };
+const urlKey = (u) => { try { const p = new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`); return `${p.hostname.replace(/^www\./, '')}${p.pathname.replace(/\/+$/, '')}`.toLowerCase(); } catch { return ''; } };
 
 /**
  * Returns a list of problems, empty when the text is fine. Links are only
@@ -89,6 +90,10 @@ export function checkPolicy(text, brief = {}, allowedUrls = []) {
   for (const raw of t.match(URL_RE) || []) {
     const u = raw.replace(/[.,;:!?'")\]]+$/, ''); // a full stop after a link is punctuation, not part of it
     if (!okUrls.has(urlKey(u))) flags.push({ phrase: u.slice(0, 50), why: 'a link that is not in your brief or sources' });
+  }
+  // Links written without https:// ("claim at evil-airdrop.xyz/claim", "discord.gg/abc") are links too.
+  for (const raw of findLinks(t.replace(URL_RE, ' '))) {
+    if (!okUrls.has(urlKey(raw))) flags.push({ phrase: raw.slice(0, 50), why: 'a link that is not in your brief or sources' });
   }
   return flags;
 }
@@ -314,6 +319,7 @@ async function makeDraftCore({ discussion: d, brief, trends, knowledge = [], con
       text = await complete({ system: SYSTEM, user: buildUser(ctx), maxTokens: 260 });
       text = text.replace(/^['“]|['”]$/g, '').trim();
       if (text) via = 'ai';
+      else note = `${note ? note + ' ' : ''}The AI answered with no text, so the built-in drafter was used.`;
     } catch (e) {
       note = `${e.message} Used the built-in drafter instead.`;
     }

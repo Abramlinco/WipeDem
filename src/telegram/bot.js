@@ -6,7 +6,7 @@ import {
   addAlert, addNetworkFlag, getNetworkHistory, getSettings, countStrikes,
   upsertCommunity, removeCommunity, listCommunities, addMemberEvent, bumpStat, addCaution
 } from '../db.js';
-import { completeTelegramLogin } from '../auth/telegramLogin.js';
+import { completeTelegramLogin, loginChoices, cancelLogin } from '../auth/telegramLogin.js';
 
 let bot = null;
 let botUsername = '';
@@ -37,6 +37,13 @@ const isGroup = (chat) => chat && (chat.type === 'group' || chat.type === 'super
 const displayName = (u) => u?.username || [u?.first_name, u?.last_name].filter(Boolean).join(' ') || 'unknown';
 const htmlEscape = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
+// A link hidden behind a word ("click here") keeps its real address in the message entities. Scan those too.
+function withLinkTargets(msg, text) {
+  const hidden = [...(msg.entities || []), ...(msg.caption_entities || [])]
+    .filter(e => e.type === 'text_link' && e.url).map(e => e.url);
+  return hidden.length ? `${text}\n${hidden.join('\n')}` : text;
+}
+
 export function startTelegramBot() {
   if (!config.telegramToken) {
     console.log('[telegram] No TELEGRAM_BOT_TOKEN set, skipping Telegram bot.');
@@ -48,12 +55,35 @@ export function startTelegramBot() {
     console.error('[telegram] could not read bot username, check TELEGRAM_BOT_TOKEN', err.message));
 
   // Sign in to the dashboard: the link carries a one time code.
+  // Pressing Start is not enough to sign in. The person must tap the number shown on the dashboard screen in
+  // front of them, so a link forwarded by someone else cannot sign them in as an admin.
   bot.onText(/^\/start login_([a-f0-9]{24})$/, (msg, match) => {
     if (msg.chat.type !== 'private') return;
-    const ok = completeTelegramLogin(match[1], msg.from);
-    bot.sendMessage(msg.chat.id, ok
-      ? 'You are signed in. Go back to the Sentinel dashboard, it will open by itself.'
-      : 'That sign in link has expired. Go back to the dashboard and start again.');
+    const choices = loginChoices(match[1]);
+    if (!choices) {
+      return bot.sendMessage(msg.chat.id, 'That sign in link has expired. Go back to the dashboard and start again.').catch(() => {});
+    }
+    const row = choices.map(n => ({ text: String(n), callback_data: `lg:${match[1]}:${n}` }));
+    bot.sendMessage(msg.chat.id,
+      '⚠️ Someone is signing in to the Sentinel dashboard with your Telegram account.\n\n' +
+      'Only continue if YOU just started this, on the screen in front of you. Tap the number that screen shows.\n\n' +
+      'If someone sent you this link, or you see no number, tap "This was not me".',
+      { reply_markup: { inline_keyboard: [row, [{ text: 'This was not me', callback_data: `lg:${match[1]}:no` }]] } }
+    ).catch(() => {});
+  });
+
+  bot.on('callback_query', async (q) => {
+    try {
+      const m = /^lg:([a-f0-9]{24}):(\d{2}|no)$/.exec(q.data || '');
+      if (!m || q.message?.chat?.type !== 'private') return await bot.answerCallbackQuery(q.id).catch(() => {});
+      const ok = m[2] !== 'no' && completeTelegramLogin(m[1], q.from, Number(m[2]));
+      if (!ok) cancelLogin(m[1]); // a wrong tap or a refusal kills the code, so it cannot be guessed
+      await bot.answerCallbackQuery(q.id, { text: ok ? 'Signed in' : 'Sign in cancelled' }).catch(() => {});
+      await bot.editMessageText(ok
+        ? 'You are signed in. Go back to the Sentinel dashboard, it will open by itself.'
+        : 'Sign in cancelled. Nothing was shared. If you want to sign in, go back to the dashboard and start again.',
+        { chat_id: q.message.chat.id, message_id: q.message.message_id }).catch(() => {});
+    } catch (err) { console.error('[telegram] sign in confirm error', err.message); }
   });
 
   bot.onText(/^\/start$/, (msg) => {
@@ -107,7 +137,8 @@ async function handleMessage(msg, isEdit = false) {
       return;
     }
 
-    if (!msg.text || !msg.from || msg.from.is_bot) return;
+    const body = msg.text || msg.caption; // photos and videos carry their words in the caption
+    if (!body || !msg.from || msg.from.is_bot) return;
     if (msg.from.id === GROUP_ANONYMOUS_BOT_ID || msg.is_automatic_forward) return;
 
     if (!isEdit) bumpStat(key, 'scanned');
@@ -120,23 +151,23 @@ async function handleMessage(msg, isEdit = false) {
     const adminIds = await getAdminIds(chatId);
     if (adminIds.has(userId)) {
       // A staff reply is how Pulse knows a question has been answered.
-      if (parent) noteReply('telegram', communityId, parent, true, msg.text || msg.caption || '');
+      if (parent) noteReply('telegram', communityId, parent, true, body || msg.caption || '');
       // Staff are normally not read. PULSE_CAPTURE_STAFF=true is for testing with your own admin account.
       if (config.pulseCaptureStaff && !isEdit) {
         captureMessage({
           settings: await getSettings('telegram', communityId), platform: 'telegram', communityId, communityName: msg.chat.title || 'Group',
           channelId: communityId, channelName: msg.chat.title || 'Group',
-          userId, username: displayName(msg.from), text: msg.text, messageId: msg.message_id, replyToId: parent
+          userId, username: displayName(msg.from), text: body, messageId: msg.message_id, replyToId: parent
         });
       } else {
-        pulseDebug('telegram', 'skipped: sender is an admin or owner (staff are not read)', displayName(msg.from), msg.text);
+        pulseDebug('telegram', 'skipped: sender is an admin or owner (staff are not read)', displayName(msg.from), body);
       }
       return; // real admins (by ID) can say anything
     }
 
     const settings = await getSettings('telegram', communityId);
-    const result = checkMessage(msg.text, settings.rules);
-    if (result.flagged) pulseDebug('telegram', `skipped: flagged by the scam rule "${result.ruleLabel}"`, displayName(msg.from), msg.text);
+    const result = checkMessage(withLinkTargets(msg, body), settings.rules);
+    if (result.flagged) pulseDebug('telegram', `skipped: flagged by the scam rule "${result.ruleLabel}"`, displayName(msg.from), body);
     if (!result.flagged) {
       // A clean message. Pulse keeps it if it is an idea, question or concern.
       if (!isEdit) {
@@ -144,7 +175,7 @@ async function handleMessage(msg, isEdit = false) {
         captureMessage({
           settings, platform: 'telegram', communityId, communityName: msg.chat.title || 'Group',
           channelId: communityId, channelName: msg.chat.title || 'Group',
-          userId, username: displayName(msg.from), text: msg.text, messageId: msg.message_id, replyToId: parent
+          userId, username: displayName(msg.from), text: body, messageId: msg.message_id, replyToId: parent
         });
       }
       return;
@@ -162,11 +193,13 @@ async function handleMessage(msg, isEdit = false) {
     // scammer here, straight to a ban review, skipping the usual escalation
     // ladder entirely, whatever strike count they are actually on.
     const tier = knownElsewhere ? { action: 'flag_for_ban' } : resolveAction(strikes, settings.escalation, result.penalty);
+    let muteFailed = false;
     if (tier.action === 'mute') {
+      // The Bot API wants a permissions object (sent as JSON), not a bare can_send_messages flag.
       await bot.restrictChatMember(chatId, userId, {
-        can_send_messages: false,
+        permissions: JSON.stringify({ can_send_messages: false }),
         until_date: Math.floor(Date.now() / 1000) + tier.minutes * 60
-      }).catch(() => {});
+      }).catch((err) => { muteFailed = true; console.error('[telegram] could not mute', userId, err.message); });
     }
     if (result.ruleKey === 'suspiciousLinks') {
       // Always explain the no links policy, whatever else happens to the message.
@@ -185,12 +218,12 @@ async function handleMessage(msg, isEdit = false) {
       channelName: msg.chat.title || 'Group',
       userId: String(userId),
       username: displayName(msg.from),
-      text: msg.text,
+      text: body,
       ruleKey: result.ruleKey,
       ruleLabel: result.ruleLabel,
       matchedPhrase: result.matchedPhrase,
       strikeCount: strikes,
-      actionTaken: knownElsewhere ? 'flagged for ban review, already known on the network' : actionLabel(tier),
+      actionTaken: knownElsewhere ? 'flagged for ban review, already known on the network' : actionLabel(tier) + (muteFailed ? ' (the mute FAILED: check the bot can restrict members)' : ''),
       seenElsewhere: knownElsewhere,
       networkCount: new Set(others.map(o => `${o.platform}:${o.guildOrChatId}`)).size
     });
@@ -238,7 +271,8 @@ export async function getTelegramAdmins(chatId) {
 
 export async function banTelegramUser(chatId, userId) {
   if (!bot) return false;
-  await bot.banChatMember(chatId, userId).catch(() => {});
+  try { await bot.banChatMember(chatId, userId); }
+  catch (err) { console.error('[telegram] ban failed', err.message); return false; }
   return true;
 }
 
@@ -247,9 +281,12 @@ export async function releaseTelegramUser(chatId, userId) {
   if (!bot) return false;
   const chat = await bot.getChat(chatId).catch(() => null);
   const perms = chat?.permissions || { can_send_messages: true };
-  await bot.restrictChatMember(chatId, userId, { permissions: JSON.stringify(perms) }).catch(() => {});
-  await bot.unbanChatMember(chatId, userId, { only_if_banned: true }).catch(() => {});
-  return true;
+  // Either step working is enough (a banned person cannot be restricted, a muted one is not banned).
+  let restored = false, unbanned = false;
+  await bot.restrictChatMember(chatId, userId, { permissions: JSON.stringify(perms) }).then(() => { restored = true; }).catch(() => {});
+  await bot.unbanChatMember(chatId, userId, { only_if_banned: true }).then(() => { unbanned = true; }).catch(() => {});
+  if (!restored && !unbanned) console.error('[telegram] release failed for', userId);
+  return restored || unbanned;
 }
 
 export async function cautionTelegramUser(chatId, { userId, username }, text) {

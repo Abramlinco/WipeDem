@@ -26,7 +26,10 @@ function phraseRegex(phrase) {
   return re;
 }
 
-const URL_RE = /\b((?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?)/gi;
+const URL_RE = /\b((?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?)/i;
+// URL_RE has no g flag on purpose: .test() on a global regex remembers where it stopped (lastIndex)
+// and the next message would be searched from that spot. This copy is only used with matchAll.
+const URL_RE_ALL = new RegExp(URL_RE.source, 'gi');
 const KNOWN_SHORTENERS = new Set([
   'bit.ly', 'tinyurl.com', 'cutt.ly', 'is.gd', 'rebrand.ly', 'shorturl.at',
   'tiny.cc', 'rb.gy', 'buff.ly', 't.co', 'ow.ly', 'shrtco.de', 'v.gd', 'lnkd.in'
@@ -69,7 +72,7 @@ function linkRisk(text, ownInviteCodes, strictMode) {
   if (invite && !(ownInviteCodes && ownInviteCodes.has(invite[1].toLowerCase()))) {
     return { url: invite[0], why: 'invites to a different Discord server, a common raid and phishing tactic' };
   }
-  const matches = [...text.matchAll(URL_RE)].map((m) => m[1]);
+  const matches = findLinks(text);
   if (!matches.length) return null;
 
   // Strict mode, the default, treats any link at all from a non admin as
@@ -128,7 +131,8 @@ export function checkMessage(text, rules, ownInviteCodes) {
 export function newAccountWithLink(text, accountAgeDays, maxDays = 3) {
   if (accountAgeDays === null || accountAgeDays === undefined) return false;
   if (accountAgeDays > maxDays) return false;
-  return URL_RE.test(text) || INVITE_RE.test(text);
+  // (URL_RE is a global regex, so calling .test() on it remembers its position and misses later links.)
+  return findLinks(text).length > 0 || INVITE_RE.test(text);
 }
 
 const MAX_MINUTES = 40320; // 28 days, the longest Discord allows
@@ -163,4 +167,35 @@ export function actionLabel(tier) {
   if (tier.action === 'flag_for_ban') return 'flagged for ban review';
   if (tier.action === 'caution') return 'sent an automatic caution';
   return 'message deleted';
+}
+// ---- harden: reading links out of chat ----
+// Chat is full of "word.word" that is not a link: Node.js, Next.js, "great project.Thanks", "gm.wagmi". A
+// written address without https:// only counts as a link when its ending is one people really put links on.
+// (Self contained on purpose: it does not depend on any other name in this file.)
+const LINK_SCAN_RE = /\b((?:https?:\/\/)(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:\/\S*)?|(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?)/gi;
+const LINK_SCAN_SHORT = new Set([
+  'bit.ly', 'tinyurl.com', 'cutt.ly', 'is.gd', 'rebrand.ly', 'shorturl.at',
+  'tiny.cc', 'rb.gy', 'buff.ly', 't.co', 'ow.ly', 'shrtco.de', 'v.gd', 'lnkd.in'
+]);
+const LINK_SCAN_TLDS = new Set([
+  'com', 'net', 'org', 'io', 'co', 'xyz', 'app', 'dev', 'ai', 'info', 'biz', 'online', 'site', 'top', 'club',
+  'live', 'click', 'link', 'pro', 'gg', 'me', 'ly', 'gd', 'gy', 'vip', 'shop', 'store', 'tech', 'cloud', 'fun',
+  'space', 'website', 'network', 'finance', 'crypto', 'exchange', 'money', 'cash', 'capital', 'digital', 'world',
+  'life', 'one', 'icu', 'cyou', 'sbs', 'rest', 'bond', 'cfd', 'mom', 'work', 'support', 'help', 'email', 'page',
+  'art', 'quest', 'monster', 'buzz', 'pw', 'tk', 'ml', 'ga', 'cf', 'gq', 'lol', 'wtf', 'uk', 'fr', 'ru', 'cn',
+  'jp', 'kr', 'br', 'es', 'nl', 'se', 'ch', 'tv', 'fm', 'eu', 'ca', 'au', 'de'
+]);
+
+/** Every link in a text, trimmed of trailing punctuation. Addresses with https:// always count. */
+export function findLinks(text) {
+  const out = [];
+  for (const m of String(text || '').matchAll(LINK_SCAN_RE)) {
+    const raw = m[1].replace(/[.,;:!?'")\]>]+$/, '');
+    if (!raw) continue;
+    if (/^https?:\/\//i.test(raw)) { out.push(raw); continue; }
+    let host = '';
+    try { host = new URL(`http://${raw}`).hostname.toLowerCase(); } catch { continue; }
+    if (LINK_SCAN_SHORT.has(host) || LINK_SCAN_TLDS.has(host.split('.').pop()) || host.startsWith('xn--') || host.includes('.xn--')) out.push(raw);
+  }
+  return out;
 }

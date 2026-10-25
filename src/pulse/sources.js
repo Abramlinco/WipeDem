@@ -131,10 +131,12 @@ export async function fetchText(url, { headers = {}, timeoutMs = 12000, maxBytes
 /* ------------------------------------------------------------------ */
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+// A broken entity in someone's feed (&#99999999;) must not throw and lose the whole feed.
+const safeCodePoint = (n, fallback) => { try { return String.fromCodePoint(n); } catch { return fallback; } };
 export const decode = (s) => s
   .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-  .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+  .replace(/&#x([0-9a-f]+);/gi, (m, h) => safeCodePoint(parseInt(h, 16), m))
+  .replace(/&#(\d+);/g, (m, d) => safeCodePoint(Number(d), m))
   .replace(/&([a-z]+);/gi, (m, n) => ENTITIES[n.toLowerCase()] ?? m);
 const plain = (s) => decode(decode(s || '')).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 const tag = (block, name) => {

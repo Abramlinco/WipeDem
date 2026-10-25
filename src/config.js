@@ -38,6 +38,10 @@ export const config = {
   xDefaultFeeds: process.env.X_DEFAULT_FEEDS !== 'false',
   poolRefreshMinutes: Math.max(10, Number(process.env.POOL_REFRESH_MINUTES) || 20),
   draftsPerHour: Math.min(Math.max(Number(process.env.DRAFTS_PER_HOUR) || 60, 5), 1000),
+  // Whole-app switches for the two automatic things. Each community still chooses in its own settings; these
+  // default to "allowed". Set either to false in .env to force Manual drafts / manual-download reports everywhere.
+  pulseAutoDrafts: process.env.PULSE_AUTO_DRAFTS !== 'false',
+  technicalAutoDelivery: process.env.TECHNICAL_AUTO_DELIVERY !== 'false',
   // The watcher reads every connected community on its own: it drafts FAQs for gaps in the facts and sends scheduled technical reports.
   pulseWatch: process.env.PULSE_WATCH !== 'false',
   watchMinutes: Math.min(Math.max(Number(process.env.PULSE_WATCH_MINUTES) || 30, 5), 1440),

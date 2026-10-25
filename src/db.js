@@ -256,6 +256,20 @@ export async function getNetworkHistory(userId) {
   return db.data.networkFlags[String(userId)] || [];
 }
 
+// Removes the newest n entries one community added for a person. Used when a flag turns out to be a false positive.
+export async function dropNetworkFlags(userId, platform, communityId, n) {
+  const id = String(userId);
+  const list = db.data.networkFlags[id];
+  if (!list || !(n > 0)) return 0;
+  let removed = 0;
+  for (let i = list.length - 1; i >= 0 && removed < n; i--) {
+    if (list[i].platform === platform && String(list[i].guildOrChatId) === String(communityId)) { list.splice(i, 1); removed++; }
+  }
+  if (!list.length) delete db.data.networkFlags[id];
+  if (removed) await db.write();
+  return removed;
+}
+
 // Other communities only. Never expose another project's name to a customer.
 export function summarizeNetwork(entries, platform, communityId) {
   const others = entries.filter(e => !(e.platform === platform && e.guildOrChatId === String(communityId)));

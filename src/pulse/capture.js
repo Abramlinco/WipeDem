@@ -16,7 +16,7 @@ export function pulseDebug(platform, why, who, text) {
 // In Auto mode a draft is prepared in the background. It is only stored,
 // never posted. If it fails, the message simply has no draft waiting.
 function autoDraft(record, settings) {
-  if (settings.replyModes?.[record.kind] !== 'auto') return;
+  if (!config.pulseAutoDrafts || settings.replyModes?.[record.kind] !== 'auto') return;
   const key = communityKey(record.platform, record.communityId);
   if (!withinAllowance(key, config.draftsPerHour)) return;
   const since = new Date(Date.now() - 4 * 86400000).toISOString();

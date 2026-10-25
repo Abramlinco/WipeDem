@@ -16,3 +16,13 @@ sentinel-surgical-patch.js
 .before-reply-patch
 .patch files
 apply-*.mjs
+
+# Local patch files, probes and backups
+*.patch
+*.diff
+*.bak-*
+*.before-*
+probe-*.mjs
+fix-*.mjs
+check-*.mjs
+FAQ-APPROVAL-FIX.md

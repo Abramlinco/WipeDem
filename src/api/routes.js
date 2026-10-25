@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireLogin } from '../auth/sessions.js';
+import { requireLogin, sessionTag } from '../auth/sessions.js';
 import { getAccess } from '../access.js';
 import { platforms } from '../platform.js';
 import { defaultEscalation } from '../db.js';
@@ -8,7 +8,7 @@ import { notificationsRouter } from './notifications.js'; // notify-patch
 import {
   listAlerts, resolveAlertsForUser, getStats, getSettings, saveSettings, addCaution, listCautions,
   listMemberEvents, getNetworkHistory, summarizeNetwork, searchNetwork, getDailyScanned, getMemberCounts,
-  communityKey
+  communityKey, dropNetworkFlags
 } from '../db.js';
 
 export const apiRouter = Router();
@@ -122,16 +122,26 @@ apiRouter.post('/users/:platform/:communityId/:userId/action', guard, async (req
   const username = latest?.username || 'there';
   const impl = platforms[platform];
 
-  if (action === 'ban') await impl.ban(communityId, userId);
-  if (action === 'release') await impl.release(communityId, userId);
+  // A ban or release that did not really happen must never be reported as done, or close the alert.
+  if (action === 'ban' || action === 'release') {
+    let done = false;
+    try { done = (await impl[action](communityId, userId)) !== false; }
+    catch (err) { console.error(`[api] ${action} failed`, err.message); }
+    if (!done) {
+      return res.status(502).json({ error: `Could not ${action} that person. Check the bot has permission to ${action === 'ban' ? 'ban members' : 'restrict and unban members'}, then try again.` });
+    }
+  }
   if (action === 'caution') {
     const settings = await getSettings(platform, communityId);
     const custom = String(req.body?.message ?? '').trim().slice(0, 400);
     await impl.caution(communityId, { userId, username }, custom || settings.cautionMessage, latest?.channelId);
-    await addCaution({ platform, communityId, userId, username, by: req.session.id.slice(0, 8), custom: !!custom });
+    await addCaution({ platform, communityId, userId, username, by: sessionTag(req.session), custom: !!custom });
   }
   // 'dismiss' takes no platform action, for when a flagged message turns out
   // to be a false positive and the person needs nothing done to them.
+
+  // A dismissed false positive must not stay on the shared network list, or the person's next flag anywhere goes straight to ban review.
+  if (action === 'dismiss') await dropNetworkFlags(userId, platform, communityId, alerts.filter(a => !a.resolved).length);
 
   const resolution = { ban: 'banned', release: 'released', caution: 'cautioned', dismiss: 'dismissed' }[action];
   await resolveAlertsForUser(platform, communityId, userId, resolution);
@@ -149,6 +159,8 @@ const toInt = (v, min, max, fallback) => {
   return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback;
 };
 const ACTIONS = ['delete', 'mute', 'flag_for_ban', 'caution'];
+// A rule key comes from the request. Only a key the community really owns counts: "__proto__" or "constructor" must never reach the rules object.
+const ownRule = (s, key) => typeof key === 'string' && Object.hasOwn(s.rules, key);
 
 apiRouter.get(settingsBase, async (req, res) => {
   res.json(await getSettings(req.params.platform, req.params.communityId));
@@ -167,23 +179,23 @@ function edit(method, path, fn) {
 
 edit('post', '/keywords', (s, { ruleKey, phrase }) => {
   const p = cleanPhrase(phrase);
-  if (!s.rules[ruleKey]) return { status: 404, error: 'Unknown rule' };
+  if (!ownRule(s, ruleKey)) return { status: 404, error: 'Unknown rule' };
   if (!p) return { error: 'Type a phrase first' };
   if (!s.rules[ruleKey].keywords.some(k => k.toLowerCase() === p.toLowerCase())) s.rules[ruleKey].keywords.push(p);
 });
 
 edit('delete', '/keywords', (s, { ruleKey, phrase }) => {
-  if (!s.rules[ruleKey]) return { status: 404, error: 'Unknown rule' };
+  if (!ownRule(s, ruleKey)) return { status: 404, error: 'Unknown rule' };
   s.rules[ruleKey].keywords = s.rules[ruleKey].keywords.filter(k => k.toLowerCase() !== String(phrase).toLowerCase());
 });
 
 edit('post', '/rule-toggle', (s, { ruleKey, enabled }) => {
-  if (!s.rules[ruleKey]) return { status: 404, error: 'Unknown rule' };
+  if (!ownRule(s, ruleKey)) return { status: 404, error: 'Unknown rule' };
   s.rules[ruleKey].enabled = !!enabled;
 });
 
 edit('post', '/rule-penalty', (s, { ruleKey, mode, minutes }) => {
-  if (!s.rules[ruleKey]) return { status: 404, error: 'Unknown rule' };
+  if (!ownRule(s, ruleKey)) return { status: 404, error: 'Unknown rule' };
   if (!['escalate', ...ACTIONS].includes(mode)) return { error: 'Unknown penalty' };
   s.rules[ruleKey].penalty = { mode, minutes: toInt(minutes, 1, 40320, 10) };
 });
@@ -197,7 +209,7 @@ edit('post', '/rules', (s, { label }) => {
 });
 
 edit('delete', '/rules/:ruleKey', (s, _body, params) => {
-  if (!params.ruleKey.startsWith('custom_') || !s.rules[params.ruleKey]) return { status: 404, error: 'Only your own rules can be deleted' };
+  if (!params.ruleKey.startsWith('custom_') || !ownRule(s, params.ruleKey)) return { status: 404, error: 'Only your own rules can be deleted' };
   delete s.rules[params.ruleKey];
 });
 
@@ -342,6 +354,8 @@ apiRouter.use('/notifications', notificationsRouter);
 /* ---------- shared network ---------- */
 
 apiRouter.get('/network', async (req, res) => {
+  // The shared list is for people who run a community. A sign-in that manages none sees nothing.
+  if (!req.access.keys.size) return res.status(403).json({ error: 'Add Sentinel to a community you manage to use the shared network list.' });
   res.json(await searchNetwork(req.query.q));
 });
 

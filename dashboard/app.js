@@ -209,7 +209,7 @@ async function telegramLogin() {
     .then((x) => x.json()).catch(() => ({}));
   if (!r.code) return toast(r.error || 'Could not start Telegram sign in', true);
   window.open(r.url, '_blank', 'noopener');
-  $('#tg-wait').innerHTML = html`<p class="muted">Press <b>Start</b> in Telegram. Nothing opened? <a href="${r.url}" target="_blank" rel="noopener">Tap here</a>. Waiting for you…</p>`.s;
+  $('#tg-wait').innerHTML = html`<p class="muted">Your confirmation number is <b style="font-size:1.4em">${r.number}</b>. Press <b>Start</b> in Telegram, then tap <b>${r.number}</b>. Nothing opened? <a href="${r.url}" target="_blank" rel="noopener">Tap here</a>. Waiting for you…</p>`.s;
   clearInterval(loginTimer);
   let tries = 0;
   loginTimer = setInterval(async () => {

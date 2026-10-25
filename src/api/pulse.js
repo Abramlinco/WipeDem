@@ -26,6 +26,7 @@ import crypto from 'node:crypto';
 import { poolPostDraft } from '../pulse/poolpost.js'; // pool-post
 import { pickMode, sourceStat } from '../pulse/campaignkit.js'; // campaign-ux
 import { saveSessionRecord } from '../db.js';
+import { sessionTag } from '../auth/sessions.js';
 
 // Mounted inside the main API router, so sign in, the JSON only rule and
 // req.access (which communities this person manages) are already in force.
@@ -424,6 +425,8 @@ pulseRouter.patch('/campaigns/:id', async (req, res) => {
   const allowed = {}; const b = req.body || {};
   if (['idea', 'planned', 'review', 'approved', 'active', 'completed', 'paused'].includes(b.status)) allowed.status = b.status;
   for (const k of ['title', 'goal', 'audience', 'platform', 'reward', 'draft']) if (typeof b[k] === 'string') allowed[k] = b[k].slice(0, k === 'draft' ? 8000 : 240);
+  if ('title' in allowed && !allowed.title.trim()) return res.status(400).json({ error: 'A campaign needs a title.' });
+  if (b.status !== undefined && !('status' in allowed)) return res.status(400).json({ error: 'Unknown campaign status.' });
   if (Array.isArray(b.steps)) allowed.steps = lines(b.steps, 240, 8);
   const c = await updateCampaign(req.params.id, scopeKeys(req), allowed);
   if (!c) return res.status(404).json({ error: 'Campaign not found in your communities.' }); res.json(c);
@@ -491,6 +494,7 @@ pulseRouter.post('/discussions/:id/draft', async (req, res) => {
   res.json({ ...draft, to: d.username, original: d.text, replied: !!d.reply });
 });
 
+const sendingNow = new Set(); // discussion ids with a reply being posted right now
 pulseRouter.post('/discussions/:id/send', async (req, res) => {
   const d = getDiscussion(req.params.id, req.access.keys);
   if (!d) return res.status(404).json({ error: 'Not found' });
@@ -498,19 +502,24 @@ pulseRouter.post('/discussions/:id/send', async (req, res) => {
   if (!text) return res.status(400).json({ error: 'The reply is empty' });
   if (text.length > 1500) return res.status(400).json({ error: 'Keep the reply under 1500 characters' });
   if (req.body?.approved !== true) return res.status(400).json({ error: 'A person must approve the reply first' });
+  // The same reply must never go out twice (a double click, a retry).
+  if (sendingNow.has(d.id) || (d.reply && d.reply.text === text)) return res.status(409).json({ error: 'That reply was already sent.' });
 
   // Checked again here, on the server, whatever the page said.
   const settings = await getSettings(d.platform, d.communityId);
-  const allowed = (req.body?.sources || []).map((u) => safeHttpUrl(u)).filter(Boolean);
+  const allowed = (Array.isArray(req.body?.sources) ? req.body.sources : []).map((u) => safeHttpUrl(u)).filter(Boolean);
   const flags = checkPolicy(text, settings.brief, allowed);
   if (flags.length) return res.status(422).json({ error: 'The reply breaks a policy rule. Edit it and try again.', flags });
 
   let ok = false;
-  try { ok = await platforms[d.platform].reply(d.communityId, d.channelId, d.messageId, text); }
-  catch { ok = false; }
-  if (!ok) return res.status(502).json({ error: 'Could not post to the chat. Check the bot can still see and write in that channel.' });
-  await markReplied(d.id, req.access.keys, text, req.session.id.slice(0, 8));
-  res.json({ ok: true });
+  sendingNow.add(d.id);
+  try {
+    try { ok = await platforms[d.platform].reply(d.communityId, d.channelId, d.messageId, text); }
+    catch { ok = false; }
+    if (!ok) return res.status(502).json({ error: 'Could not post to the chat. Check the bot can still see and write in that channel.' });
+    await markReplied(d.id, req.access.keys, text, sessionTag(req.session));
+    res.json({ ok: true });
+  } finally { sendingNow.delete(d.id); }
 });
 
 /* ---------- Draft modes and focus ---------- */
@@ -524,7 +533,9 @@ pulseRouter.post('/modes/:platform/:communityId', guard, async (req, res) => {
   const { platform, communityId } = req.params;
   const s = await getSettings(platform, communityId);
   for (const k of ['question', 'idea', 'concern']) {
-    if (['manual', 'auto'].includes(req.body?.modes?.[k])) s.replyModes[k] = req.body.modes[k];
+    const want = req.body?.modes?.[k];
+    if (want === 'auto' && !config.pulseAutoDrafts) return res.status(403).json({ error: 'Automatic drafts are switched off for the whole app (PULSE_AUTO_DRAFTS=false in .env). Drafts stay on Manual.' });
+    if (['manual', 'auto'].includes(want)) s.replyModes[k] = want;
   }
   await saveSettings(platform, communityId, s);
   res.json(s.replyModes);
@@ -746,7 +757,8 @@ pulseRouter.patch('/faq-intelligence/:id', async (req, res) => {
   for (const k of ['question', 'answer', 'status']) {
     if (typeof req.body?.[k] === 'string') patch[k] = req.body[k].slice(0, k === 'answer' ? 5000 : 1200);
   }
-  if (patch.status && !['pending','approved','dismissed'].includes(patch.status)) return res.status(400).json({ error: 'Unknown FAQ status.' });
+  if ('status' in patch && !['pending','approved','dismissed'].includes(patch.status)) return res.status(400).json({ error: 'Unknown FAQ status.' });
+  if ('question' in patch && !patch.question.trim()) return res.status(400).json({ error: 'The question cannot be empty.' });
   const current = listFaqDrafts(req.access.keys).find((x) => x.id === req.params.id);
   if (!current) return res.status(404).json({ error: 'FAQ draft not found.' });
   // Whoever changes the answer becomes its author, so it is no longer "taken from a moderator reply".
@@ -796,6 +808,7 @@ pulseRouter.post('/technical-push/:platform/:communityId/settings', guard, async
   const destinationPlatform = ['discord','telegram'].includes(b.destinationPlatform) ? b.destinationPlatform : '';
   const destinationCommunityId = String(b.destinationCommunityId || '').slice(0, 80);
   const destinationChannelId = String(b.destinationChannelId || '').slice(0, 100);
+  if (delivery === 'auto' && !config.technicalAutoDelivery) return res.status(403).json({ error: 'Automatic delivery is switched off for the whole app (TECHNICAL_AUTO_DELIVERY=false in .env). Reports stay on manual download.' });
   if (delivery === 'auto' && (!destinationPlatform || !destinationCommunityId)) return res.status(400).json({ error: 'Choose a destination community for automatic delivery.' });
   // Automatic delivery runs with nobody signed in, so who may be posted to is decided here, once.
   if (delivery === 'auto' && !req.access.keys.has(communityKey(destinationPlatform, destinationCommunityId))) return res.status(403).json({ error: 'You do not manage that destination community.' });
@@ -966,6 +979,6 @@ pulseRouter.post('/post', async (req, res) => {
       results.push({ label: `X · @${acct.handle}`, ok: true, url: r.url, cost: postCost(text) });
     } catch (e) { results.push({ label: `X · @${acct.handle}`, ok: false, error: e.message }); }
   }
-  await logPost({ by: req.session.id.slice(0, 8), where: results.map((r) => `${r.label}${r.ok ? '' : ' (failed)'}`), preview: text.slice(0, 120) });
+  await logPost({ by: sessionTag(req.session), where: results.map((r) => `${r.label}${r.ok ? '' : ' (failed)'}`), preview: text.slice(0, 120) });
   res.json({ results, xIntentUrl: x?.mode === 'intent' ? xIntentUrl(text) : undefined, tweetLength: x ? tweetLength(text) : undefined });
 });

@@ -46,9 +46,11 @@ export async function complete({ system, user, maxTokens = 400 }) {
     return (r.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
   }
   if (mode === 'openai') {
+    // Reasoning models (such as gpt-oss) spend part of max_tokens on thinking, which can leave an empty answer.
+    const reasoning = /gpt-oss/i.test(config.aiModel || '');
     const r = await post(`${config.aiBaseUrl.replace(/\/+$/, '')}/chat/completions`,
       config.aiKey ? { Authorization: `Bearer ${config.aiKey}` } : {},
-      { model: config.aiModel, max_tokens: maxTokens, temperature: 0.4, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] });
+      { model: config.aiModel, max_tokens: reasoning ? maxTokens + 600 : maxTokens, temperature: 0.4, ...(reasoning ? { reasoning_effort: 'low' } : {}), messages: [{ role: 'system', content: system }, { role: 'user', content: user }] });
     return String(r.choices?.[0]?.message?.content || '').trim();
   }
   throw new Error('No AI model is set up.');

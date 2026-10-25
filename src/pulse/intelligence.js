@@ -229,6 +229,7 @@ const RETRY_AFTER_MS = 3 * 3600000;
  * tried again a few hours later rather than waiting a whole cadence or making a new report every pass.
  */
 export async function runTechnicalSchedules(now = Date.now()) {
+  if (!config.technicalAutoDelivery) return 0; // switched off for the whole app in .env
   let sent = 0;
   for (const [key, s] of allTechnicalSettings()) {
     if (!s.enabled || s.delivery !== 'auto' || !s.destinationPlatform || !s.destinationCommunityId) continue;

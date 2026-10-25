@@ -22,16 +22,19 @@
 
   /* ---------------- what each page is for ---------------- */
   const INTRO = {
-    home: ['Your daily overview', 'See what Sentinel caught today, how many messages are waiting for your review, and how your communities are growing. Click any flagged message to see that person\'s history.'],
+    home: ['Your daily overview', 'See what Sentinel caught today, how many messages are waiting for your review, and how your communities are growing. Click any flagged message to see that person\'s history. The bell shows what is new.'],
     discord: ['Your Discord servers', 'These are messages Sentinel removed. Nothing is final until you choose: Ban removes the person, Caution posts your warning in the chat, and Release lifts any mute or ban. Click a name to see their history.'],
     telegram: ['Your Telegram groups', 'These are messages Sentinel removed. Nothing is final until you choose: Ban removes the person, Caution posts your warning in the chat, and Release lifts any mute or ban. Click a name to see their history.'],
     'pulse/ideas': ['What your community is saying', 'Pulse picks out ideas, questions and concerns from your chats. Press Draft reply for a suggested answer you can edit, copy or send. Star keeps something near the top, Done marks it handled, and Dismiss hides it.'],
     'pulse/trends': ['What is happening outside', 'Crypto news, Reddit and mainstream tech, with the stories your members are also talking about shown first. Use Refresh now to read the feeds straight away.'],
-    'pulse/pools': ['Pools you watch', 'Paste a link to a pool, or your token\'s address, and Pulse checks it every 20 minutes. You are told when liquidity drops or grows, when trading spikes, and when a new pool appears for your token. Important changes also show up as ideas in the Playbook.'],
+    'pulse/pools': ['Pools you watch', 'Paste a link to a pool, or your token\'s address, and Pulse checks it every 20 minutes. You are told when liquidity drops or grows, when trading spikes, and when a new pool appears for your token. Important changes also show up as ideas in the Playbook. Suggested pools lists pools found from your project details, and Post update shares a change once you confirm.'],
+    campaigns: ['Plan a campaign', 'Pick where ideas come from (X, Web3 sources or Ask AI) and a campaign type. Sentinel suggests three ideas first. Press Develop this on the one you like and it writes the full plan. Save the plan to keep it and track its status.'],
+    faqs: ['Questions your facts do not cover', 'Scan all communities reads recent chats for repeated questions, complaints and errors, then drafts an FAQ for each one your facts do not answer. Nothing becomes a fact until you approve it, and you can edit the answer first.'],
+    technical: ['Technical issues in one report', 'Generate report gathers the wallet, staking and other technical problems members reported into one report for your developers. Download it or send it to a channel. In settings it can also be sent on its own daily, weekly or monthly.'],
     'pulse/playbook': ['Ideas for what to post', 'Pulse compares what your members say with what is trending and suggests what to do. Each idea has steps and a draft post you can copy.'],
-    'pulse/setup': ['Teach Pulse about your project', 'The more it knows, the better the replies. Add your brief and docs under Project brief and Knowledge. Drafting controls how drafts are prepared, Focus picks your topics, X sets up reading and posting on X, and Reading chooses which communities are read.'],
+    'pulse/setup': ['Teach Pulse about your project', 'The more it knows, the better the replies. Add your brief and docs under Project brief and Knowledge. Drafting controls how drafts are prepared (Manual or Auto, unless Auto has been switched off for the whole app in .env), Focus picks your topics, X sets up reading and posting on X, and Reading chooses which communities are read.'],
     reports: ['How things are going over time', 'Charts of scams caught and member growth. Copy a summary or download a CSV to share with your team.'],
-    network: ['People flagged elsewhere', 'Look up someone before you trust them. You see how many communities flagged them and why, never which communities. Nothing is banned automatically.'],
+    network: ['People flagged elsewhere', 'Look up someone before you trust them. You see how many communities flagged them and why, never which communities. Nothing is banned automatically. You need at least one community connected to use it.'],
     settings: ['How Sentinel behaves', 'Choose what counts as a scam, what happens to people who break rules, the messages Sentinel posts, and who it trusts as an admin. Pulse settings are on the Pulse page, under Setup.']
   };
   function pageKey() {
@@ -49,6 +52,9 @@
     '#/reports': 'Charts of scams caught and member growth over time.',
     '#/network': 'Look up people flagged by other communities.',
     '#/settings': 'Rules, penalties, messages and trusted admins.',
+    '#/campaigns': 'Brainstorm and plan community campaigns with the Campaign Coordinator.',
+    '#/faqs': 'Draft FAQs for questions your facts do not cover. You approve each one.',
+    '#/technical': 'Turn reported technical problems into a report for your developers.',
     '#/pulse/ideas': 'What your members are asking, suggesting and worrying about.',
     '#/pulse/trends': 'What is trending in crypto and beyond, including X.',
     '#/pulse/pools': 'The pools you watch, and what changed in them.',
@@ -100,6 +106,41 @@
     ['[data-theme-toggle]', 'Switch between light and dark.'],
     ['[data-act="logout"]', 'Sign out of Sentinel on this device.'],
     ['[data-act="more"]', 'More pages: Reports, Network, Settings and your account.'],
+    ['[data-cp-source]', 'Choose where campaign ideas come from: X, Web3 sources or your own project brief.'],
+    ['[data-cp-type]', 'Choose the kind of campaign you want ideas for.'],
+    ['[data-cp-explore]', 'Fill the message box with a starter question for the chosen source. Nothing is sent yet.'],
+    ['[data-cp-develop]', 'Write the full plan for this idea.'],
+    ['[data-cp-save]', 'Keep this plan in your saved campaigns so you can come back to it.'],
+    ['[data-cp-open]', 'Continue working on this saved campaign in the chat.'],
+    ['[data-cp-clear]', 'Start a fresh conversation. Saved campaigns are kept.'],
+    ['[data-act="faq-scan"]', 'Read recent chats in all your communities and draft FAQs for questions your facts do not cover.'],
+    ['[data-act="faq-approve"]', 'Add this answer to your facts so replies can use it. Nothing is added until you press this.'],
+    ['[data-act="faq-save"]', 'Keep your edits to this answer without approving it yet.'],
+    ['[data-act="faq-dismiss"]', 'Throw this draft away, or take an approved answer back out of your facts.'],
+    ['[data-act="faq-filter"]', 'Show only this platform or status.'],
+    ['[data-act="tech-generate"]', 'Build a report from the technical issues members reported in the chosen period.'],
+    ['[data-act="tech-download"]', 'Save this report as a text file.'],
+    ['[data-act="tech-push"]', 'Post this report to the channel set in settings.'],
+    ['[data-act="tech-settings"]', 'Save how often reports are made and where they are sent.'],
+    ['[data-act="tech-delete"]', 'Delete this report.'],
+    ['[data-pulse="pool-post"]', 'Share this pool change on your Discord, Telegram or X. You confirm before anything is posted.'],
+    ['[data-pulse="sugg-find"]', 'Look for pools that hold your token, using your project brief and docs. Nothing is added yet.'],
+    ['[data-pulse="sugg-add"]', 'Start watching this pool. Check it is really yours first.'],
+    ['[data-nf="bell"]', 'New ideas, questions, scam alerts and FAQ drafts waiting for you.'],
+    ['[data-nf="read-all"]', 'Mark everything in the list as seen.'],
+    ['[data-nf="settings"]', 'Choose the sound, pop-ups and messages to your Telegram or Discord.'],
+    ['[data-nf="browser-on"]', 'Get a pop-up when Sentinel is open in the background.'],
+    ['[data-pulse="kind"]', 'Show only ideas, questions, concerns, praise or discussions.'],
+    ['[data-pulse="space"]', 'Narrow the stories to Web3 and crypto, traditional tech or social.'],
+    ['[data-pulse="setup-section"]', 'Switch to this part of Pulse setup.'],
+    ['[data-pulse="brief-save"]', 'Save your project brief. Ideas and drafts use it.'],
+    ['[data-pulse="know-add-text"]', 'Keep this text as a source so replies can use it.'],
+    ['[data-pulse="modes-save"]', 'Save whether drafts wait for you to press Draft reply or are prepared on arrival. Nothing is posted without your approval.'],
+    ['[data-pulse="focus-save"]', 'Save the topics Pulse should pay most attention to.'],
+    ['[data-pulse="src-add"]', 'Start reading this subreddit, feed or X account. It is read at the next check.'],
+    ['[data-pulse="src-del"]', 'Stop reading this source.'],
+    ['[data-pulse="x-authorize"]', 'Log in to X so Sentinel can post for you. You still confirm every post.'],
+    ['[data-pulse="post-regen"]', 'Write another version of this post.'],
     ['[data-nav]', (el) => NAV_TIPS[el.dataset.nav]]
   ];
 
@@ -212,6 +253,7 @@
         <li><span class="pi">${ic('shield')}</span><div><b>Protection that asks first</b><span>Catches fake admins, scam links and raid bots. Nobody is banned without your decision.</span></div></li>
         <li><span class="pi">${ic('listen')}</span><div><b>Ideas, questions and concerns</b><span>Pulse turns busy chats into a short list, next to what is trending in crypto.</span></div></li>
         <li><span class="pi">${ic('reply')}</span><div><b>Replies you approve</b><span>Drafts answers from your own docs and live data. Nothing is posted until you press send.</span></div></li>
+        <li><span class="pi">${ic('campaigns')}</span><div><b>Grow and support tools</b><span>Plan campaigns, turn repeated questions into FAQs you approve, and send technical reports to your developers.</span></div></li>
       </ul>
       <div class="wb"><button class="btn" data-w="skip">Skip, I will explore</button><button class="btn primary" data-w="tour">Show me around</button></div>
     </div>`;
@@ -242,6 +284,9 @@
     { sel: '[data-nav="#/discord"]', title: 'Discord', text: 'Every message Sentinel removed in your servers. You decide what happens to each person. The + connects another server.' },
     { sel: '[data-nav="#/telegram"]', title: 'Telegram', text: 'The same for your Telegram groups. A red number appears when messages are waiting for you.' },
     { sel: '[data-nav="#/pulse"]', title: 'Pulse', text: 'Hear your community. Pulse finds ideas, questions and concerns in chat, shows what is trending, and drafts replies you approve before anything is posted.' },
+    { sel: '[data-nav="#/campaigns"]', more: true, title: 'Campaign planner', text: 'Brainstorm with the Campaign Coordinator. You get three ideas first, then a full plan for the one you pick.' },
+    { sel: '[data-nav="#/faqs"]', more: true, title: 'FAQs Intelligence', text: 'Drafts answers for questions your facts do not cover. Nothing becomes a fact until you approve it.' },
+    { sel: '[data-nav="#/technical"]', more: true, title: 'Technical Push', text: 'Gathers reported technical problems into a report for your developers, to download or send to a channel.' },
     { sel: '[data-nav="#/reports"]', more: true, title: 'Reports', text: 'Charts of scams caught and member growth over time, with a summary or export you can share with your team.' },
     { sel: '[data-nav="#/network"]', more: true, title: 'Network', text: 'Look up people other communities have flagged. You see how many flagged them and why, never which communities.' },
     { sel: '[data-nav="#/settings"]', more: true, title: 'Settings', text: 'Choose what counts as a scam, what happens to rule breakers, the messages Sentinel posts, and who it trusts.' },

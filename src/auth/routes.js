@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 import { config, discordLoginEnabled } from '../config.js';
 import { parseCookies, setCookie, clearCookie, loginAs, logout } from './sessions.js';
-import { newLoginCode, takeConfirmedLogin, isPending } from './telegramLogin.js';
+import { newLogin, takeConfirmedLogin, isPending } from './telegramLogin.js';
 import { getBotUsername } from '../telegram/bot.js';
 import { discordGenericInviteUrl } from '../discord/bot.js';
 
@@ -94,18 +94,33 @@ authRouter.get('/discord/callback', async (req, res) => {
 
 /* ---------------- Telegram sign in (through the bot) ---------------- */
 
+const BIND_COOKIE = 'sentinel_tg_bind';
+const startHits = new Map(); // ip -> times of recent sign in starts
+
 authRouter.post('/telegram/start', (req, res) => {
   const username = getBotUsername();
   if (!username) return res.status(503).json({ error: 'Telegram bot is not running.' });
-  const code = newLoginCode();
-  res.json({ code, url: `https://t.me/${username}?start=login_${code}` });
+  const now = Date.now();
+  const hits = (startHits.get(req.ip) || []).filter(t => now - t < 10 * 60 * 1000);
+  if (hits.length >= 30) return res.status(429).json({ error: 'Too many sign in attempts. Wait a few minutes and try again.' });
+  hits.push(now);
+  startHits.set(req.ip, hits);
+  if (startHits.size > 1000) for (const [k, v] of startHits) if (!v.some(t => now - t < 10 * 60 * 1000)) startHits.delete(k);
+
+  const login = newLogin();
+  if (!login) return res.status(503).json({ error: 'Too many sign ins are waiting. Try again in a few minutes.' });
+  // The code only works for the browser that asked for it, and the person must tap this number inside Telegram.
+  setCookie(res, BIND_COOKIE, login.bind, { maxAge: 600 });
+  res.json({ code: login.code, number: login.number, url: `https://t.me/${username}?start=login_${login.code}` });
 });
 
 authRouter.get('/telegram/status', async (req, res) => {
   const code = String(req.query.code || '');
   if (!/^[a-f0-9]{24}$/.test(code)) return res.json({ ok: false });
-  const user = takeConfirmedLogin(code);
-  if (!user) return res.json({ ok: false, waiting: isPending(code) });
+  const bind = parseCookies(req.headers.cookie)[BIND_COOKIE] || '';
+  const user = takeConfirmedLogin(code, bind);
+  if (!user) return res.json({ ok: false, waiting: isPending(code, bind) });
+  clearCookie(res, BIND_COOKIE);
   await loginAs(req, res, { telegram: { user } });
   res.json({ ok: true });
 });

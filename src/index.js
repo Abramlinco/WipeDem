@@ -6,6 +6,9 @@ import { startTelegramBot, telegramMemberCounts } from './telegram/bot.js';
 import { startFeeder } from './pulse/feeder.js';
 import { startWatcher } from './pulse/intelligence.js';
 
+// One failed background call (a chat that vanished, a network blip) must be logged, not take the whole bot down.
+process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason?.message || reason));
+
 const app = await createApp();
 app.listen(config.port, config.host, () => {
   console.log(`[server] Dashboard running at ${config.publicUrl}  (listening on ${config.host}:${config.port})`);
