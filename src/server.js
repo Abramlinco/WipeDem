@@ -18,6 +18,9 @@ export async function createApp() {
   const app = express();
   app.disable('x-powered-by');
 
+app.set('trust proxy', 1);
+app.get('/healthz', (req, res) => res.type('text').send('ok'));
+
   // The dashboard loads only its own files (plus Discord profile pictures).
   // Blocking inline scripts means even a scam message full of HTML cannot run code.
   app.use((req, res, next) => {
