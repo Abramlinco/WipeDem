@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { defaultBrief } from './pulse/reply.js';
 import { monthKey } from './pulse/x.js';
 import { poolChunks } from './pulse/pools.js';
+import { PgAdapter } from './pgAdapter.js';
 
 // Everything the app remembers lives in one JSON file so you can open
 // data/db.json and see exactly what the bot knows. This is the ONLY file
@@ -45,7 +46,11 @@ const defaultData = {
 // The file is read once at start. From then on memory is the source of truth
 // and every change is saved right away. Re-reading the file on every
 // operation let two things happening at the same moment overwrite each other.
-export const db = new Low(new JSONFile(file), structuredClone(defaultData));
+// DATABASE_URL (Postgres) switches storage from the JSON file to Postgres. An explicit SENTINEL_DB_FILE, and any
+// `node --test` run, always use a file, so a test can never touch a live database.
+const usePostgres = !!process.env.DATABASE_URL && !process.env.SENTINEL_DB_FILE && !process.env.NODE_TEST_CONTEXT;
+if (!process.env.NODE_TEST_CONTEXT) console.log(usePostgres ? '[db] Storage: Postgres (DATABASE_URL)' : `[db] Storage: file ${file}`);
+export const db = new Low(usePostgres ? new PgAdapter(process.env.DATABASE_URL) : new JSONFile(file), structuredClone(defaultData));
 
 export async function initDb() {
   await db.read();
