@@ -27,7 +27,7 @@ const STAGE = { off: 'Off for everyone', creator: 'Testing (only me)', live: 'Li
 
 function frame(body) {
   $('#cp').innerHTML = html`<div class="cp-top"><h1>Creator panel</h1><a href="/">← Back to Sentinel</a></div>
-    <div class="cp-tabs">${TABS.map(([id, l]) => html`<button class="${tab === id ? 'on' : ''}" data-tab="${id}">${l}</button>`)}</div>${body}`.s;
+    <div class="cp-tabs">${TABS.map(([id, l]) => html`<button class="${tab === id ? 'on' : ''}" data-tab="${id}">${l}</button>`)}</div>${{ [RAW]: true, s: body }}`.s; // creator-fixes
 }
 
 async function load() {

@@ -87,7 +87,9 @@ export function effectivePlan(acc, now = new Date()) {
 
 // May this person use this feature right now? Creators are never blocked, so they can test every stage.
 export function decide(data, { acc, isCreator, featureId, now = new Date() }) {
-  if (!featureId || isCreator) return { allow: true };
+  if (isCreator) return { allow: true }; // creator-fixes
+  if (acc?.suspended) return { allow: false, code: 'suspended', message: 'This account is paused. Contact the Sentinel team.' };
+  if (!featureId) return { allow: true };
   const c = ensureState(data);
   const f = c.features[featureId];
   if (!f) return { allow: true };

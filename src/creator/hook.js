@@ -25,7 +25,7 @@ export async function trackLogin(session) {
 export function featureGate(req, res, next) {
   try {
     const featureId = featureForPath(req.path);
-    if (!featureId) return next();
+    if (!featureId && req.path === '/me') return next(); // creator-fixes: a paused account is blocked on every page except /me
     const creator = isCreatorSession(req.session);
     const acc = accountFor(db.data, req.session);
     const verdict = decide(db.data, { acc, isCreator: creator, featureId });

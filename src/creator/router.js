@@ -51,6 +51,8 @@ const scrub = (s) => String(s || '').replace(/[A-Za-z0-9_\-.]{32,}/g, '[hidden]'
 /* ---------- communities, worked out from what the bots already record ---------- */
 function communityRows() {
   const today = new Date().toISOString().slice(0, 10), since = day(daysAgo(7));
+  const openByKey = {}; // creator-fixes: count open alerts once, not once per community
+  for (const a of db.data.alerts) if (!a.resolved) { const k = `${a.platform}:${a.guildId}`; openByKey[k] = (openByKey[k] || 0) + 1; }
   return Object.entries(db.data.communities).map(([key, c]) => {
     const stats = Object.entries(db.data.dailyStats[key] || {});
     const counts = Object.entries(db.data.memberCounts[key] || {}).sort(([a], [b]) => (a < b ? -1 : 1));
@@ -60,7 +62,7 @@ function communityRows() {
       scanned7d: stats.filter(([d]) => d >= since).reduce((n, [, v]) => n + (v.scanned || 0), 0),
       flagged7d: stats.filter(([d]) => d >= since).reduce((n, [, v]) => n + (v.flagged || 0), 0),
       scannedToday: db.data.dailyStats[key]?.[today]?.scanned || 0,
-      openAlerts: db.data.alerts.filter((a) => `${a.platform}:${a.guildId}` === key && !a.resolved).length
+      openAlerts: openByKey[key] || 0
     };
   });
 }
