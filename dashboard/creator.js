@@ -41,7 +41,7 @@ async function load() {
     if (tab === 'health') { await viewHealth(); healthTimer = setInterval(() => { if (tab === 'health' && !document.hidden) viewHealth(); }, 15000); return; }
     if (tab === 'activity') return viewActivity(await api('/audit'));
   } catch (e) {
-    if (e.status === 404 || e.status === 401) { $('#cp').innerHTML = html`<div class="cp-panel"><h2>Not available</h2><p class="muted">This page is only for the Sentinel creator. Sign in with the creator account, and make sure CREATOR_IDS is set on the server.</p><a href="/">Back to Sentinel</a></div>`.s; return; }
+    if (e.status === 404 || e.status === 401) return signInScreen(); // creator-key-login
     toast(e.message, true);
   }
 }
@@ -107,12 +107,26 @@ function viewActivity(r) {
   frame(html`<div class="cp-panel"><h2>Everything changed from this panel</h2>${r.audit.length ? r.audit.map((a) => html`<div class="cp-log">${when(a.at)} · ${a.who} · <b>${a.action}</b> · ${a.detail}</div>`) : html`<p class="muted">Nothing yet.</p>`}</div>`.s);
 }
 
+// creator-key-login
+async function signInScreen() {
+  let s = {};
+  try { s = await (await fetch('/api/creator/status')).json(); } catch { /* shown below */ }
+  $('#cp').innerHTML = (s.keyLogin
+    ? html`<div class="cp-panel" style="max-width:420px;margin:40px auto"><h2>Creator sign in</h2><p class="muted">Enter the creator key you set on the server.</p>
+        <div class="cp-row"><input type="password" id="ck" placeholder="Creator key" autocomplete="current-password" style="flex:1"><button class="cp-btn go" data-act="keylogin">Sign in</button></div><a href="/">Back to Sentinel</a></div>`
+    : html`<div class="cp-panel" style="max-width:520px;margin:40px auto"><h2>Not available</h2><p class="muted">This page is only for the Sentinel creator. On the server, set CREATOR_KEY (at least 20 characters) or CREATOR_IDS, then restart.</p><a href="/">Back to Sentinel</a></div>`).s;
+}
+async function keyLogin() {
+  try { await api('/login', { method: 'POST', body: { key: $('#ck').value } }); await load(); } catch (e) { toast(e.message, true); }
+}
+
 async function act(fn, ok) { try { await fn(); if (ok) toast(ok); await load(); } catch (e) { toast(e.message, true); } }
 
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-tab]'); if (t) { tab = t.dataset.tab; return load(); }
   const a = e.target.closest('[data-act]'); if (!a) return;
   const row = a.closest('tr');
+  if (a.dataset.act === 'keylogin') return keyLogin(); // creator-key-login
   if (a.dataset.act === 'search') { search = $('#q').value; return load(); }
   if (a.dataset.act === 'pause') return act(() => api(`/accounts/${encodeURIComponent(row.dataset.key)}`, { method: 'POST', body: { suspended: a.dataset.paused !== 'true' } }), 'Saved');
   if (a.dataset.act === 'stage') return act(() => api(`/features/${row.dataset.feature}/stage`, { method: 'POST', body: { stage: a.dataset.stage } }), 'Saved');
@@ -123,5 +137,5 @@ document.addEventListener('change', (e) => {
   if (el.dataset.plan) return act(() => api(`/plans/${el.dataset.plan}/${el.dataset.feature}`, { method: 'POST', body: { enabled: el.checked } }), 'Saved');
   if (el.dataset.field) { const row = el.closest('tr'); return act(() => api(`/accounts/${encodeURIComponent(row.dataset.key)}`, { method: 'POST', body: { [el.dataset.field]: el.value } }), 'Saved'); }
 });
-document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'q') { search = e.target.value; load(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'q') { search = e.target.value; load(); } if (e.key === 'Enter' && e.target.id === 'ck') keyLogin(); }); // creator-key-login
 load();

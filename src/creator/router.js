@@ -8,17 +8,33 @@ import { discordEnabled } from '../discord/bot.js';
 import { telegramEnabled } from '../telegram/bot.js';
 import { FEATURES, PLAN_IDS, PLAN_LABELS } from './features.js';
 import { ensureState, accountView, usageSummary, updateAccount, setPlanFeature, setStage, addRelease, audit, judge, worst } from './logic.js';
-import { creatorEnabled, isCreatorSession } from './hook.js';
+import { creatorAllowed } from './hook.js'; // creator-key-login
+import { keyLoginEnabled, keyIsValid, issueCookie, clearCookie, clientIp, locked, fail, succeed } from './keyauth.js'; // creator-key-login
 import { snapshot } from './monitor.js';
 
 export const creatorRouter = Router();
 const started = new Date().toISOString();
 const pkg = (() => { try { return JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')); } catch { return {}; } })();
 
+/* ---------- creator key sign in (open to anyone, but only a correct key does anything) ---------- */ // creator-key-login
+creatorRouter.get('/status', (req, res) => res.json({ keyLogin: keyLoginEnabled(), signedIn: creatorAllowed(req) }));
+creatorRouter.post('/login', async (req, res) => {
+  if (!keyLoginEnabled()) return res.status(404).json({ error: 'Not found' });
+  const ip = clientIp(req);
+  if (locked(ip)) return res.status(429).json({ error: 'Too many wrong keys. Wait 15 minutes and try again.' });
+  if (!keyIsValid(String(req.body?.key ?? ''))) { fail(ip); return res.status(401).json({ error: 'That key is not right.' }); }
+  succeed(ip);
+  issueCookie(req, res);
+  audit(db.data, 'creator key', 'sign in', '');
+  await save();
+  res.json({ ok: true });
+});
+creatorRouter.post('/logout', (req, res) => { clearCookie(req, res); res.json({ ok: true }); });
+
 /* ---------- guards: signed in, a creator, and a JSON request when changing anything ---------- */
 // To anyone else this panel does not exist: the answer is the same 404 the rest of the site gives for a missing page.
 creatorRouter.use((req, res, next) => {
-  if (!creatorEnabled() || !req.session || !isCreatorSession(req.session)) return res.status(404).json({ error: 'Not found' });
+  if (!creatorAllowed(req)) return res.status(404).json({ error: 'Not found' }); // creator-key-login
   next();
 });
 creatorRouter.use((req, res, next) => {
@@ -26,7 +42,7 @@ creatorRouter.use((req, res, next) => {
   next();
 });
 
-const who = (req) => `${sessionTag(req.session)} ${req.session.discord?.user?.username || req.session.telegram?.user?.username || ''}`.trim();
+const who = (req) => !req.session ? 'creator key' : `${sessionTag(req.session)} ${req.session.discord?.user?.username || req.session.telegram?.user?.username || ''}`.trim();
 const save = () => db.write();
 const day = (iso) => (iso || '').slice(0, 10);
 const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();

@@ -2,6 +2,7 @@
 import { db } from '../db.js';
 import { ensureState, recordLogin, accountFor, decide, lockedFor, recordUse } from './logic.js';
 import { featureForPath, isPassive } from './features.js';
+import { hasCookie } from './keyauth.js'; // creator-key-login
 
 // CREATOR_IDS=discord:123456789,telegram:987654321  (the same IDs people see in their Sentinel account)
 export const creatorIds = () => new Set(String(process.env.CREATOR_IDS || '').split(',').map((s) => s.trim()).filter(Boolean));
@@ -33,6 +34,8 @@ export function featureGate(req, res, next) {
   } catch (e) { console.error('[creator] gate error:', e.message); }
   next();
 }
+
+export const creatorAllowed = (req) => isCreatorSession(req.session) || hasCookie(req); // creator-key-login
 
 export const locksFor = (session) => {
   try { return lockedFor(db.data, { acc: accountFor(db.data, session), isCreator: isCreatorSession(session) }); } catch { return []; }
