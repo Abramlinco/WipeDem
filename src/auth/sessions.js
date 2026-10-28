@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { getSessionRecord, saveSessionRecord, deleteSessionRecord } from '../db.js';
+import { trackLogin } from '../creator/hook.js'; // creator-panel
 
 export const COOKIE = 'sentinel_sid';
 const WEEK = 7 * 24 * 3600;
@@ -53,6 +54,7 @@ export async function loginAs(req, res, patch) {
   session.expiresAt = new Date(Date.now() + WEEK * 1000).toISOString();
   Object.assign(session, patch);
   await saveSessionRecord(session);
+  await trackLogin(session); // creator-panel
   setCookie(res, COOKIE, session.id);
   req.session = session;
   return session;

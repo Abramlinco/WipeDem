@@ -6,6 +6,8 @@ import { initDb } from './db.js';
 import { attachSession } from './auth/sessions.js';
 import { authRouter } from './auth/routes.js';
 import { apiRouter } from './api/routes.js';
+import { creatorRouter } from './creator/router.js'; // creator-panel
+import { installMonitor, trackRequests } from './creator/monitor.js'; // creator-panel
 import { config } from './config.js';
 import { exchangeXCode } from './pulse/x.js';
 import { getXAccount, setXAccount } from './db.js';
@@ -33,6 +35,8 @@ app.get('/healthz', (req, res) => res.type('text').send('ok'));
 
   app.use(express.json({ limit: '50kb' }));
   app.use(attachSession);
+  installMonitor(); // creator-panel
+  app.use(trackRequests); // creator-panel
   app.use('/auth', authRouter);
   // A small page for the X tab. No inline script (the security policy blocks it), so the message is plain HTML.
   const xPage = (res, status, title, message) => res.status(status).type('html').send(
@@ -57,6 +61,7 @@ app.get('/healthz', (req, res) => res.type('text').send('ok'));
       return xPage(res, 502, 'Sentinel could not finish connecting X', e.message || 'Check the X app callback URL and OAuth permissions, then try again.');
     }
   });
+  app.use('/api/creator', creatorRouter); // creator-panel
   app.use('/api', apiRouter);
   app.use(express.static(path.join(__dirname, '..', 'dashboard')));
 

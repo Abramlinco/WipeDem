@@ -5,6 +5,7 @@ import { platforms } from '../platform.js';
 import { defaultEscalation } from '../db.js';
 import { pulseRouter } from './pulse.js';
 import { notificationsRouter } from './notifications.js'; // notify-patch
+import { featureGate, isCreatorSession, locksFor } from '../creator/hook.js'; // creator-panel
 import {
   listAlerts, resolveAlertsForUser, getStats, getSettings, saveSettings, addCaution, listCautions,
   listMemberEvents, getNetworkHistory, summarizeNetwork, searchNetwork, getDailyScanned, getMemberCounts,
@@ -30,6 +31,8 @@ apiRouter.use((req, res, next) => {
 apiRouter.use(async (req, res, next) => {
   try { req.access = await getAccess(req.session); next(); } catch (err) { next(err); }
 });
+
+apiRouter.use(featureGate); // creator-panel
 
 const PLATFORMS = ['discord', 'telegram'];
 
@@ -62,6 +65,8 @@ apiRouter.get('/me', (req, res) => {
   res.json({
     discord: s.discord?.user ? { user: s.discord.user } : null,
     telegram: s.telegram?.user ? { user: s.telegram.user } : null,
+    creator: isCreatorSession(s), // creator-panel
+    locks: locksFor(s), // creator-panel
     communities: req.access.communities,
     invites: req.access.invites
   });

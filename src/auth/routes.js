@@ -37,7 +37,7 @@ authRouter.get('/discord', (req, res) => {
     client_id: config.discordClientId,
     redirect_uri: redirectUri(),
     response_type: 'code',
-    scope: 'identify guilds',
+    scope: process.env.CREATOR_COLLECT_EMAIL === 'true' ? 'identify guilds email' : 'identify guilds', // creator-panel
     state
   });
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
@@ -83,7 +83,7 @@ authRouter.get('/discord/callback', async (req, res) => {
       .map(g => ({ id: g.id, name: g.name, icon: g.icon }));
 
     await loginAs(req, res, {
-      discord: { user: { id: user.id, username: user.global_name || user.username, avatar: user.avatar }, guilds: manageable }
+      discord: { user: { id: user.id, username: user.global_name || user.username, avatar: user.avatar, email: process.env.CREATOR_COLLECT_EMAIL === 'true' ? (user.email || null) : null }, guilds: manageable }
     });
     res.redirect('/');
   } catch (err) {

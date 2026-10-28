@@ -248,6 +248,7 @@ function shell(page) {
         </div>
         ${who}
         <a href="#/settings/account" data-nav="#/settings/account">${icon('user')}Account</a>
+        ${me.creator ? html`<a href="/creator.html">${icon('shield')}Creator panel</a>` : ''}<!-- creator-panel -->
         <a data-act="logout" style="cursor:pointer">${icon('logout')}Log out</a>
       </div>
     </aside>
