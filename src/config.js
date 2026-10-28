@@ -1,5 +1,7 @@
 import 'dotenv/config';
 
+// Hosting dashboards often keep a stray space, newline or quote mark around pasted values. Strip them.
+const env = (k) => String(process.env[k] || '').trim().replace(/^["']|["']$/g, '').trim();
 const port = Number(process.env.PORT || 3000);
 
 export const config = {
@@ -8,11 +10,11 @@ export const config = {
   // The address people use to reach the dashboard. Discord sends people
   // back to this address after they sign in, so it must match exactly what
   // you register in the Discord Developer Portal.
-  publicUrl: (process.env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/+$/, ''),
-  discordToken: process.env.DISCORD_BOT_TOKEN || '',
-  discordClientId: process.env.DISCORD_CLIENT_ID || '',
-  discordClientSecret: process.env.DISCORD_CLIENT_SECRET || '',
-  telegramToken: process.env.TELEGRAM_BOT_TOKEN || '',
+  publicUrl: (env('PUBLIC_URL') || `http://localhost:${port}`).replace(/\/+$/, ''),
+  discordToken: env('DISCORD_BOT_TOKEN'),
+  discordClientId: env('DISCORD_CLIENT_ID'),
+  discordClientSecret: env('DISCORD_CLIENT_SECRET'),
+  telegramToken: env('TELEGRAM_BOT_TOKEN'),
   // Pulse: community ideas and market trends
   pulseEnabled: process.env.PULSE_ENABLED !== 'false',
   pulseRefreshMinutes: Math.max(10, Number(process.env.PULSE_REFRESH_MINUTES) || 30),

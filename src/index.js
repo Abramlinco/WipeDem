@@ -26,6 +26,8 @@ if (config.host !== '127.0.0.1' && config.host !== 'localhost' && !config.public
   console.warn('[WARNING] The dashboard is reachable from the network but PUBLIC_URL is not https. Put it behind HTTPS before real admins sign in.');
 }
 
+if (process.env.RENDER && !process.env.DATABASE_URL) console.warn('[WARNING] Running on Render with NO DATABASE_URL: every deploy or restart wipes sign-in sessions, communities and settings. Add a Postgres URL.');
+
 // Save the message counters every few seconds, not on every message.
 setInterval(() => flushStats().catch(e => console.error('[stats]', e.message)), 15000);
 

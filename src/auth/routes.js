@@ -64,9 +64,13 @@ authRouter.get('/discord/callback', async (req, res) => {
       })
     });
     if (!tokenRes.ok) {
+      // Say WHY Discord refused (invalid_client = wrong secret, invalid_grant = code reused or redirect mismatch). No secrets are logged.
+      const raw = await tokenRes.text().catch(() => '');
+      let why = ''; try { const j = JSON.parse(raw); why = [j.error, j.error_description].filter(Boolean).join(': '); } catch { why = raw.slice(0, 80).replace(/<[^>]*>/g, ' '); }
+      console.error(`[auth] discord token exchange failed: HTTP ${tokenRes.status} ${why} (redirect_uri=${redirectUri()})`);
       return res.status(400).send(page('Sign in failed',
-        'Discord did not accept the sign in. Check that the Redirect URL in the Developer Portal is exactly ' +
-        `<code>${redirectUri()}</code>.`));
+        `Discord did not accept the sign in (HTTP ${tokenRes.status}${why ? ', ' + String(why).replace(/[&<>"]/g, '') : ''}). Redirect URL used: ` +
+        `<code>${redirectUri()}</code>`));
     }
     const { access_token } = await tokenRes.json();
     const auth = { headers: { Authorization: `Bearer ${access_token}` } };
