@@ -5,6 +5,20 @@ import { parseCookies, setCookie, clearCookie, loginAs, logout } from './session
 import { newLogin, takeConfirmedLogin, isPending } from './telegramLogin.js';
 import { getBotUsername } from '../telegram/bot.js';
 import { discordGenericInviteUrl } from '../discord/bot.js';
+// login-fix: Discord (through Cloudflare) rate limits requests that carry no User-Agent, which is a common cause of
+// HTTP 429 on shared hosts such as Render. Every call to discord.com from this file now identifies itself, and a
+// failed call is logged with its real status and retry time.
+const fetch = async (url, opts = {}) => {
+  if (!String(url).startsWith('https://discord.com/')) return globalThis.fetch(url, opts);
+  const given = opts.headers instanceof Headers ? Object.fromEntries(opts.headers) : (opts.headers || {});
+  const headers = { 'User-Agent': `DiscordBot (${config.publicUrl}, 1.0) Sentinel`, Accept: 'application/json', ...given };
+  const res = await globalThis.fetch(url, { ...opts, headers });
+  if (!res.ok) {
+    const body = (await res.clone().text().catch(() => '')).slice(0, 200).replace(/\s+/g, ' ');
+    console.error(`[auth] discord request failed: ${new URL(url).pathname} HTTP ${res.status} retry-after=${res.headers.get('retry-after') || '-'} ${body}`);
+  }
+  return res;
+};
 
 export const authRouter = Router();
 

@@ -253,7 +253,7 @@ export async function telegramAdminChats(userId) {
     } catch { return null; }
   }));
   const chats = checks.filter(Boolean);
-  adminChatCache.set(userId, { at: Date.now(), chats });
+  if (chats.length) adminChatCache.set(userId, { at: Date.now(), chats }); // only remember a non-empty answer
   return chats;
 }
 

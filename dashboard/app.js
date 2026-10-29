@@ -987,3 +987,39 @@ setInterval(() => {
 }, 10000);
 
 boot();
+/* badge-flicker-fix: the sidebar is rebuilt on every page change with every badge hidden, and the counts only came
+   back after several requests finished. This remembers each badge's last count and puts it back on the new element
+   at once; the normal update then corrects it if the number really changed. */
+(() => {
+  const root = document.getElementById('app');
+  if (!root) return;
+  const cache = {};
+  const seen = new WeakSet();
+  const sweep = () => {
+    root.querySelectorAll('[data-badge]').forEach((el) => {
+      const id = el.dataset.badge;
+      const text = (el.textContent || '').trim();
+      if (!seen.has(el)) {
+        seen.add(el);
+        if (el.hidden && cache[id]) { el.textContent = cache[id]; el.hidden = false; }
+        else if (!el.hidden && text) cache[id] = text;
+      } else if (el.hidden) delete cache[id];
+      else if (text) cache[id] = text;
+    });
+  };
+  const obs = new MutationObserver(() => { sweep(); obs.takeRecords(); });
+  obs.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'], characterData: true });
+  sweep();
+})();
+
+/* telegram-connect-fix: pick up newly connected groups and servers without a reload or a new sign in. */
+setInterval(async () => {
+  try {
+    if (!state.me || state.profile) return;
+    const fresh = await api('/me');
+    const key = (m) => (m.communities || []).map((c) => c.key).sort().join('|');
+    const changed = key(fresh) !== key(state.me);
+    state.me = fresh;
+    if (changed) render();
+  } catch { /* the next tick tries again */ }
+}, 10000);
